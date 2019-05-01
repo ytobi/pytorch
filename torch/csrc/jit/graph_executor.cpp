@@ -16,6 +16,7 @@
 #include <torch/csrc/jit/passes/constant_propagation.h>
 #include <torch/csrc/jit/passes/create_autodiff_subgraphs.h>
 #include <torch/csrc/jit/passes/dead_code_elimination.h>
+#include <torch/csrc/jit/passes/decompose_ops.h>
 #include <torch/csrc/jit/passes/graph_fuser.h>
 #include <torch/csrc/jit/passes/inline_autodiff_subgraphs.h>
 #include <torch/csrc/jit/passes/inplace_check.h>
@@ -645,6 +646,10 @@ struct GraphExecutorImpl {
     }
     // decomposition pass, decompose certain ops that will be used in the following
     // passes (like batchmm and jit fusion)
+    DecomposeOps(graph);
+    // Autodiff and decompositon pass will replace some parts of graph with new graph
+    // these new graphs usually miss shape information on nodes, so we propagate shapes
+    // PropagateInputShapes(graph);
 
     // Rewrite subgraphs with many MMs into expressions that batch them.
     BatchMM(graph);
