@@ -140,7 +140,9 @@ TENSOR_H = CodeTemplate.from_file(TEMPLATE_PATH + "/Tensor.h")
 TENSOR_METHODS_H = CodeTemplate.from_file(TEMPLATE_PATH + "/TensorMethods.h")
 
 FUNCTIONS_H = CodeTemplate.from_file(TEMPLATE_PATH + "/Functions.h")
+
 LEGACY_TH_FUNCTIONS_H = CodeTemplate.from_file(TEMPLATE_PATH + "/LegacyTHFunctions.h")
+LEGACY_TH_FUNCTIONS_CPP = CodeTemplate.from_file(TEMPLATE_PATH + "/LegacyTHFunctions.cpp")
 
 NATIVE_FUNCTIONS_H = CodeTemplate.from_file(TEMPLATE_PATH + "/NativeFunctions.h")
 
@@ -286,6 +288,8 @@ def generate_storage_type_and_tensor(backend, density, declarations):
             env['extra_cuda_headers'].append('#include <ATen/hip/ATenHIPGeneral.h>')
             env['extra_cuda_headers'].append('#include <ATen/hip/HIPDevice.h>')
             env['extra_cuda_headers'].append('#include <ATen/hip/HIPTypeDefault.h>')
+            env['extra_cuda_headers'].append('#include <ATen/hip/HIPContext.h>')
+            env['allocator'] = 'at::hip::getCUDADeviceAllocator()'
         else:
             env['th_headers'] = [
                 '#include <THC/THC.h>',
@@ -297,6 +301,8 @@ def generate_storage_type_and_tensor(backend, density, declarations):
             env['extra_cuda_headers'].append('#include <ATen/cuda/ATenCUDAGeneral.h>')
             env['extra_cuda_headers'].append('#include <ATen/cuda/CUDADevice.h>')
             env['extra_cuda_headers'].append('#include <ATen/cuda/CUDATypeDefault.h>')
+            env['extra_cuda_headers'].append('#include <ATen/cuda/CUDAContext.h>')
+            env['allocator'] = 'at::cuda::getCUDADeviceAllocator()'
         env['state'] = ['globalContext().getTHCState()']
         env['isCUDA'] = 'true'
         env['storage_device'] = 'return storage->device;'
@@ -313,11 +319,14 @@ def generate_storage_type_and_tensor(backend, density, declarations):
         env['isCUDA'] = 'false'
         env['storage_device'] = 'throw std::runtime_error("CPU storage has no device");'
         env['Generator'] = 'CPUGenerator'
+        env['allocator'] = 'getCPUAllocator()'
 
-    declarations, definitions = function_wrapper.create_derived(
+    declarations, definitions, th_declarations, th_definitions = function_wrapper.create_derived(
         env, declarations)
     env['type_derived_method_declarations'] = declarations
     env['type_derived_method_definitions'] = definitions
+    env['legacy_th_declarations'] = th_declarations
+    env['legacy_th_definitions'] = th_definitions
 
     fm = file_manager
     if env['DeviceType'] == 'CUDA':
@@ -328,6 +337,11 @@ def generate_storage_type_and_tensor(backend, density, declarations):
     else:
         fm.write(env['Type'] + ".cpp", SPARSE_TYPE_DERIVED_CPP, env)
     fm.write(env['Type'] + ".h", TYPE_DERIVED_H, env)
+
+    if env['Backend'] == 'CPU' or env['Backend'] == 'CUDA':
+        env['namespace'] = env['Backend'].lower()
+        fm.write('LegacyTHFunctions' + env['Backend'] + ".h", LEGACY_TH_FUNCTIONS_H, env)
+        fm.write('LegacyTHFunctions' + env['Backend'] + ".cpp", LEGACY_TH_FUNCTIONS_CPP, env)
 
     type_register = TYPE_REGISTER.substitute(backend=env['Backend'], type_name=env['Type'])
     if env['DeviceType'] == 'CPU':
@@ -418,8 +432,8 @@ def declare_outputs():
     for f in core_files:
         core_file_manager.will_write(f)
     files = ['Declarations.yaml', 'TypeExtendedInterface.h', 'TypeDefault.cpp', 'TypeDefault.h',
-             'LegacyTHDispatcher.h', 'LegacyTHDispatcher.cpp', 'LegacyTHFunctions.h',
-             'Functions.h', 'NativeFunctions.h', 'RegisterCPU.cpp', 'RegisterCPU.h', 'ExtensionBackendRegistration.h']
+             'LegacyTHDispatcher.h', 'LegacyTHDispatcher.cpp', 'Functions.h', 'NativeFunctions.h',
+             'RegisterCPU.cpp', 'RegisterCPU.h', 'ExtensionBackendRegistration.h']
     for f in files:
         file_manager.will_write(f)
     cuda_files = ['RegisterCUDA.cpp', 'RegisterCUDA.h']
@@ -441,6 +455,9 @@ def declare_outputs():
                 continue
             fm.will_write("{}{}.h".format(full_backend, kind))
             fm.will_write("{}{}.cpp".format(full_backend, kind))
+        if backend == 'CPU' or backend == 'CUDA':
+            fm.will_write("LegacyTHFunctions{}.h".format(backend))
+            fm.will_write("LegacyTHFunctions{}.cpp".format(backend))
     # output LegacyTHDispatchers
     for backend, density, scalar_type in legacy_iterate_types():
         fm = file_manager
@@ -539,7 +556,6 @@ def generate_outputs():
     cuda_file_manager.write('RegisterCUDA.cpp', REGISTER_CUDA_CPP, top_env)
 
     file_manager.write('Functions.h', FUNCTIONS_H, top_env)
-    file_manager.write('LegacyTHFunctions.h', LEGACY_TH_FUNCTIONS_H, top_env)
 
     file_manager.write('NativeFunctions.h', NATIVE_FUNCTIONS_H, top_env)
 
