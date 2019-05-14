@@ -54,4 +54,5 @@ Tensor * ${Type}::add(Tensor & a, Tensor & b) {
 
 ${type_derived_method_definitions}
 
+${function_registrations}
 }
