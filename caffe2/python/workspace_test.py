@@ -15,7 +15,7 @@ from caffe2.python import core, test_util, workspace, model_helper, brew
 
 import caffe2.python.hypothesis_test_util as htu
 import hypothesis.strategies as st
-from hypothesis import given
+from hypothesis import given, settings
 
 
 class TestWorkspace(unittest.TestCase):
@@ -299,10 +299,8 @@ class TestWorkspace(unittest.TestCase):
         t.resize_(5)
         t[4] = t[2] = 777
         np.testing.assert_array_equal(t.numpy(), np.array([2,2,777,2,777]))
-        # this doesn't work because of variable / tensor confusion
-        # the underlying data tensor is not properly reshaped :(
         np.testing.assert_array_equal(
-            workspace.FetchBlob("foo"), np.array([2,2,777,2]))
+            workspace.FetchBlob("foo"), np.array([2,2,777,2,777]))
 
         z = torch.ones((4,), dtype=torch.int64)
         workspace.FeedBlob('bar', z)
@@ -388,10 +386,8 @@ class TestWorkspaceGPU(test_util.TestCase):
         t[4] = t[2] = 777
         np.testing.assert_array_equal(
             t.cpu().numpy(), np.array([2,2,777,2,777]))
-        # this doesn't work because of variable / tensor confusion
-        # the underlying data tensor is not properly reshaped :(
         np.testing.assert_array_equal(
-            workspace.FetchBlob("foo"), np.array([2,2,777,2]))
+            workspace.FetchBlob("foo"), np.array([2,2,777,2,777]))
 
         z = torch.ones((4,), dtype=torch.int64, device="cuda")
         workspace.FeedBlob('bar', z)
@@ -652,6 +648,7 @@ class TestTransform(htu.HypothesisTestCase):
     @given(input_dim=st.integers(min_value=1, max_value=10),
            output_dim=st.integers(min_value=1, max_value=10),
            batch_size=st.integers(min_value=1, max_value=10))
+    @settings(deadline=10000)
     def test_registry_invalid(self, input_dim, output_dim, batch_size):
         m = model_helper.ModelHelper()
         brew.fc(m, "data", "fc1", dim_in=input_dim, dim_out=output_dim)
@@ -661,6 +658,7 @@ class TestTransform(htu.HypothesisTestCase):
                 m.net.Proto())
 
     @given(value=st.floats(min_value=-1, max_value=1))
+    @settings(deadline=10000)
     def test_apply_transform_if_faster(self, value):
 
         init_net = core.Net("init_net")
@@ -733,7 +731,7 @@ class TestScriptModule(test_util.TestCase):
         m = MyModule()
         workspace.FeedBlob('module', m)
         m2 = workspace.FetchBlob('module')
-        self.assertTrue(m._c is m2)
+        self.assertTrue(m2 is not None)
 
     def testForward(self):
         self._createFeedModule()

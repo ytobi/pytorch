@@ -9,6 +9,8 @@
 #include <ATen/TensorUtils.h>
 #include <ATen/Utils.h>
 #include <c10/util/Exception.h>
+#include <THC/THCAtomics.cuh>
+#include <THC/THCNumerics.cuh>
 
 #include <algorithm>
 #include <cfloat>
@@ -40,10 +42,10 @@ __device__ inline int64_t get_intervals(
 
 template <typename scalar_t>
 __global__ void fractional_max_pool3d_out_frame(
-  PackedTensorAccessor<scalar_t, 5> input,
-  PackedTensorAccessor<scalar_t, 5> output,
-  PackedTensorAccessor<int64_t, 5> indices,
-  PackedTensorAccessor<scalar_t, 3> samples,
+  PackedTensorAccessor64<scalar_t, 5> input,
+  PackedTensorAccessor64<scalar_t, 5> output,
+  PackedTensorAccessor64<int64_t, 5> indices,
+  PackedTensorAccessor64<scalar_t, 3> samples,
   int64_t poolSizeT, int64_t poolSizeH, int64_t poolSizeW) {
     using accscalar_t = at::acc_type<scalar_t, /*is_cuda=*/true>;
     // Output (t, h, w) point that this thread is responsible for
@@ -69,8 +71,8 @@ __global__ void fractional_max_pool3d_out_frame(
         static_cast<accscalar_t>(samples[batch][plane][2]),
         outputW, input.size(4), output.size(4), poolSizeW);
 
-      scalar_t maxVal = at::numeric_limits<scalar_t>::lowest();
-      int64_t maxIndex = -1;
+      scalar_t maxVal = at::numeric_limits<scalar_t>::lower_bound();
+      int64_t maxIndex = poolT * input.size(3) * input.size(4) + poolH * input.size(4) + poolW;
 
       for(int64_t t = poolT; t < poolT + poolSizeT; ++ t) {
         for (int64_t h = poolH; h < poolH + poolSizeH; ++h) {
@@ -78,7 +80,7 @@ __global__ void fractional_max_pool3d_out_frame(
             for (int64_t w = poolW; w < poolW + poolSizeW; ++w) {
               scalar_t val = input[batch][plane][t][h][w];
               // for consistency with THNN, favor the first max
-              if (val > maxVal) {
+              if (val > maxVal || THCNumerics<scalar_t>::isnan(val)) {
                 maxIndex = t * input.size(3) *
                   input.size(4) + h * input.size(4) + w;
                 maxVal = val;
@@ -89,7 +91,7 @@ __global__ void fractional_max_pool3d_out_frame(
               int64_t w = i + poolW;
               scalar_t val = input[batch][plane][t][h][w];
               // for consistency with THNN, favor the first max
-              if (val > maxVal) {
+              if (val > maxVal || THCNumerics<scalar_t>::isnan(val)) {
                 maxIndex = t * input.size(3) * input.size(4) +
                   h * input.size(4) + w;
                 maxVal = val;
@@ -99,9 +101,6 @@ __global__ void fractional_max_pool3d_out_frame(
         }
       }
 
-      assert(maxVal != at::numeric_limits<scalar_t>::lowest());
-      assert(maxIndex != -1);
-
       indices[batch][plane][outputT][outputH][outputW] = maxIndex;
       output[batch][plane][outputT][outputH][outputW] = maxVal;
     }
@@ -109,9 +108,9 @@ __global__ void fractional_max_pool3d_out_frame(
 
 template <typename scalar_t>
 __global__ void fractional_max_pool3d_backward_out_frame(
-  PackedTensorAccessor<scalar_t, 5> gradInput,
-  PackedTensorAccessor<scalar_t, 5> gradOutput,
-  PackedTensorAccessor<int64_t, 5> indices) {
+  PackedTensorAccessor64<scalar_t, 5> gradInput,
+  PackedTensorAccessor64<scalar_t, 5> gradOutput,
+  PackedTensorAccessor64<int64_t, 5> indices) {
   // Output (h, w) point that this thread is responsible for
   int64_t ourOutputPoint = threadIdx.x + blockIdx.x * blockDim.x;
   int64_t plane = blockIdx.y;
@@ -135,7 +134,7 @@ __global__ void fractional_max_pool3d_backward_out_frame(
       gradInput.size(4));
     assert(inputT < gradInput.size(2));
 
-    atomicAdd(
+    gpuAtomicAdd(
       &gradInput[batch][plane][inputT][inputH][inputW],
       gradOutput[batch][plane][outputT][outputH][outputW]
       );
@@ -236,17 +235,15 @@ void fractional_max_pool3d_out_cuda_template(
       [&]{
         fractional_max_pool3d_out_frame<scalar_t>
         <<<grid, block, 0, at::cuda::getCurrentCUDAStream()>>>(
-          input_.packed_accessor<scalar_t, 5>(),
-          output_.packed_accessor<scalar_t, 5>(),
-          indices_.packed_accessor<int64_t, 5>(),
-          randomSamples.packed_accessor<scalar_t, 3>(),
+          input_.packed_accessor64<scalar_t, 5>(),
+          output_.packed_accessor64<scalar_t, 5>(),
+          indices_.packed_accessor64<int64_t, 5>(),
+          randomSamples.packed_accessor64<scalar_t, 3>(),
           poolSizeT, poolSizeH, poolSizeW
         );
       }
     );
-    TORCH_CHECK(cudaGetLastError() == cudaSuccess,
-          "fractional_max_pool2d_out_cuda_template failed with error code ",
-          cudaGetLastError());
+    AT_CUDA_CHECK(cudaGetLastError());
   }
 
 void fractional_max_pool3d_backward_out_cuda_template(
@@ -326,15 +323,13 @@ void fractional_max_pool3d_backward_out_cuda_template(
       [&] {
         fractional_max_pool3d_backward_out_frame<scalar_t>
         <<<grid, block, 0, at::cuda::getCurrentCUDAStream()>>>(
-          gradInput_.packed_accessor<scalar_t, 5>(),
-          gradOutput_.packed_accessor<scalar_t, 5>(),
-          indices_.packed_accessor<int64_t, 5>()
+          gradInput_.packed_accessor64<scalar_t, 5>(),
+          gradOutput_.packed_accessor64<scalar_t, 5>(),
+          indices_.packed_accessor64<int64_t, 5>()
         );
       }
     );
-    TORCH_CHECK(cudaGetLastError() == cudaSuccess,
-          "fractional_max_pool2d_out_cuda_template failed with error code ",
-          cudaGetLastError());
+    AT_CUDA_CHECK(cudaGetLastError());
   }
 
 }// namespace
@@ -382,6 +377,8 @@ Tensor& fractional_max_pool3d_backward_out_cuda(
   IntArrayRef pool_size,
   IntArrayRef output_size,
   const at::Tensor& indices) {
+    // Nondeterministic because of atomicAdd usage
+    globalContext().alertNotDeterministic("fractional_max_pool3d_backward_out_cuda");
     fractional_max_pool3d_backward_out_cuda_template(
       gradInput,
       gradOutput_,
@@ -399,6 +396,8 @@ Tensor fractional_max_pool3d_backward_cuda(
   IntArrayRef pool_size,
   IntArrayRef output_size,
   const at::Tensor& indices) {
+    // Nondeterministic because of atomicAdd usage
+    globalContext().alertNotDeterministic("fractional_max_pool3d_backward_cuda");
     Tensor gradInput = at::empty({0}, input.options());
     fractional_max_pool3d_backward_out_cuda_template(
       gradInput,

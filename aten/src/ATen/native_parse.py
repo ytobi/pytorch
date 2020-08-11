@@ -11,7 +11,6 @@ try:
 except ImportError:
     from yaml import Loader
 
-
 # [temp translations]
 # We're currently incrementally moving from the custom func schema to the
 # JIT signature schema incrementally. This will reduce overall complexity
@@ -43,22 +42,21 @@ def type_argument_translations(arg):
     # need to special case Generator? logic to make ? only available in jit
     # TODO: deprecate is_nullable global flag, and parse the type
     # to support annotating complicated types with optional annotation
-    nullable = (t != 'Generator?' and '?' in t)
+    nullable = '?' in t
 
     # This enables "Generator? x = None and translates to legacy
-    # "Generator* x = nullptr". See [temp translations].
+    # "Generator x = nullptr". See [temp translations].
     if t == 'Generator?' and default == 'None':
-        t = 'Generator*'
-        default = 'nullptr'
-    # Enables Generator? by translating to legacy Generator*.
-    elif t == "Generator?":
-        t = 'Generator*'
+        t = 'Generator'
+        default = 'c10::nullopt'
     # Enables Tensor[] by translating to legacy TensorList.
     elif t == 'Tensor[]' or t == 'Tensor?[]':
         t = 'TensorList'
     # Enables int[] by translating to legacy IntArrayRef.
     elif t == 'int[]':
         t = 'IntArrayRef'
+    elif t == 'int[]?':
+        t = 'IntArrayRef?'
     # Enables int by translating to legacy int64_t.
     elif t == 'int':
         t = 'int64_t'
@@ -70,9 +68,20 @@ def type_argument_translations(arg):
     elif t == 'int64_t?':
         raise RuntimeError("Please use int? and not int64_t?. "
                            "See [temp translations] for details.")
+    # Enables Dimname[] by translating to legacy DimnameList.
+    elif t == 'Dimname[]':
+        t = 'DimnameList'
+    elif t == 'Dimname[]?':
+        t = 'DimnameList?'
     # Enables float by translating to legacy double.
     elif t == 'float':
         t = 'double'
+    elif t == 'float?':
+        t = 'double?'
+    elif t == 'float[]':
+        t = 'ArrayRef<double>'
+    elif t == 'float[]?':
+        t = 'ArrayRef<double>?'
     # Enables str by translating to legacy std::string.
     elif t == 'str':
         t = 'std::string'
@@ -91,10 +100,11 @@ def type_argument_translations(arg):
     elif re.match(r'std::array', t):
         raise RuntimeError("Please use array notation, e.g. bool[3] and not std::array."
                            "See [temp translations] for details.")
-
-    # Legacy type sanitization. TODO: Do we really need this?
-    if t == 'Generator*':
-        t = 'Generator *'
+    # Enables Dimname[x] by translating to DimnameList[x]. See [temp translations]
+    elif re.match(r'Dimname\[(\d+)\]', t):
+        match = re.match(r'Dimname\[(\d+)\]', t)
+        t = 'DimnameList'
+        size = int(match.group(1))
 
     if not default:
         pass
@@ -123,12 +133,14 @@ def type_argument_translations(arg):
     elif default == 'None':
         default = 'c10::nullopt'
     # The JIT signature schema uses Mean, but in particular C++ needs
-    # the legacy Reduction::Mean. So we'll continue emiting that until
+    # the legacy at::Reduction::Mean. So we'll continue emiting that until
     # we change this at either a JIT schema or C++ level.
     elif default == 'Mean':
-        default = 'Reduction::Mean'
+        default = 'at::Reduction::Mean'
     elif default == 'contiguous_format':
         default = 'MemoryFormat::Contiguous'
+    elif default == 'per_tensor_affine':
+        default = 'QScheme::PER_TENSOR_AFFINE'
     else:
         try:
             default = int(default)
@@ -141,7 +153,7 @@ def type_argument_translations(arg):
     return t, name, default, nullable, size, annotation
 
 
-def parse_arguments(args, func_variants, declaration, func_return):
+def parse_arguments(args):
     arguments = []
     kwarg_only = False
 
@@ -168,6 +180,9 @@ def parse_arguments(args, func_variants, declaration, func_return):
             argument_dict['kwarg_only'] = True
         arguments.append(argument_dict)
 
+    return arguments
+
+def process_arguments(arguments, func_variants, declaration, func_return):
     is_out_fn = False
     arguments_out = []
     arguments_other = []
@@ -226,6 +241,18 @@ def parse_arguments(args, func_variants, declaration, func_return):
              'default': 'c10::nullopt', 'is_nullable': True},
         ]
     )
+    supported_topt_arguments.append(
+        [
+            {'name': 'dtype', 'type': 'ScalarType', 'annotation': None, 'kwarg_only': True,
+             'default': 'c10::nullopt', 'is_nullable': True},
+            {'name': 'layout', 'type': 'Layout', 'annotation': None, 'kwarg_only': True,
+             'default': 'c10::nullopt', 'is_nullable': True},
+            {'name': 'device', 'type': 'Device', 'annotation': None, 'kwarg_only': True,
+             'default': 'c10::nullopt', 'is_nullable': True},
+            {'name': 'pin_memory', 'type': 'bool', 'annotation': None, 'kwarg_only': True,
+             'default': False, 'is_nullable': True},
+        ]
+    )
 
     corresponding_topts = [
         {'type': 'TensorOptions', 'name': 'options', 'is_nullable': False, 'annotation': None},
@@ -237,6 +264,9 @@ def parse_arguments(args, func_variants, declaration, func_return):
     corresponding_topts.append(
         {'type': 'TensorOptions', 'name': 'options', 'is_nullable': False, 'annotation': None,
          'kwarg_only': True, 'default': 'at::kLong'})
+    corresponding_topts.append(
+        {'type': 'TensorOptions', 'name': 'options', 'is_nullable': False, 'annotation': None,
+         'kwarg_only': True})
 
     def check_topt_representation(topt_representation):
         for idx, supported_topt in enumerate(supported_topt_arguments):
@@ -302,7 +332,7 @@ def parse_arguments(args, func_variants, declaration, func_return):
 
     # TODO: Explicit checking for void is a hack and should disappear after a more
     # functionally complete implementation of Tensor aliases.
-    if declaration['inplace'] and len(func_return) > 0 and func_return[0]['type'] != "void":
+    if declaration['inplace'] and len(func_return) > 0:
         found_self = False
         for arg_idx, argument in enumerate(arguments):
             if argument['name'] == "self":
@@ -323,12 +353,15 @@ def parse_arguments(args, func_variants, declaration, func_return):
 
 def parse_return_arguments(return_decl, inplace, func_decl):
     arguments = []
+    if return_decl == '()':
+        return arguments
+
     # TODO: Use a real parser here; this will get bamboozled
     # by signatures that contain things like std::array<bool, 2> (note the space)
     if return_decl[0] == '(' and return_decl[-1] == ')':
         return_decl = return_decl[1:-1]
-    multiple_args = len(return_decl.split(', ')) > 1
 
+    multiple_args = len(return_decl.split(', ')) > 1
     for arg_idx, arg in enumerate(return_decl.split(', ')):
         t, name, default, nullable, size, annotation = type_argument_translations(arg)
         # name of arguments and name of return sometimes have collision
@@ -351,6 +384,23 @@ def parse_return_arguments(return_decl, inplace, func_decl):
         argument_dict['output'] = True
         arguments.append(argument_dict)
     return arguments
+
+
+def parse_dispatch(name, dispatch):
+    """
+    Parse a dictionary like {"CPU, CUDA": "blah"}
+    into {"CPU": "blah", "CUDA": "blah"}
+    """
+    if not isinstance(dispatch, dict):
+        return dispatch
+    r = {}
+    for old_k, v in dispatch.items():
+        ks = old_k.split(',')
+        for k in ks:
+            k = k.strip()
+            assert k not in r, "{}, {}".format(name, k)
+            r[k] = v
+    return r
 
 
 def parse_native_yaml(path):
@@ -377,25 +427,39 @@ def run(paths):
                 else:
                     raise Exception('Expected return declaration')
                 fn_name, arguments = func_decl.split('(', 1)
+                if '.' in fn_name:
+                    fn_name, overload_name = fn_name.split('.', 1)
+                else:
+                    overload_name = ''
                 assert arguments[-1] == ")", "Expecting closing ) for {}".format(func['func'])
                 arguments = arguments[:-1]  # Expect closing )
                 declaration['name'] = func.get('name', fn_name)
+                declaration['operator_name'] = func.get('name', fn_name)
+                declaration['overload_name'] = func.get('overload_name', overload_name)
                 declaration['inplace'] = re.search('(^__i|[^_]_$)', fn_name) is not None
                 return_arguments = parse_return_arguments(return_decl, declaration['inplace'], func)
-                arguments = parse_arguments(arguments, func.get('variants', []), declaration, return_arguments)
+                schema_order_arguments = parse_arguments(arguments)
+                arguments = process_arguments(schema_order_arguments, func.get('variants', []), declaration, return_arguments)
                 output_arguments = [x for x in arguments if x.get('output')]
                 propagate_field_names(output_arguments, return_arguments)
                 declaration['return'] = return_arguments if len(output_arguments) == 0 else output_arguments
                 declaration['variants'] = func.get('variants', ['function'])
-                declaration['requires_tensor'] = func.get('requires_tensor', False)
                 declaration['matches_jit_signature'] = func.get('matches_jit_signature', True)
                 declaration['cpu_half'] = func.get('cpu_half', False)
+                declaration['cpu_bfloat16'] = func.get('cpu_bfloat16', False)
+                declaration['cuda_bfloat16'] = func.get('cuda_bfloat16', False)
                 declaration['cpu_bool'] = func.get('cpu_bool', False)
                 declaration['cuda_bool'] = func.get('cuda_bool', False)
                 declaration['deprecated'] = func.get('deprecated', False)
                 declaration['device_guard'] = func.get('device_guard', True)
+                declaration['use_c10_dispatcher'] = func.get('use_c10_dispatcher', 'with_codegenerated_unboxing_wrapper')
+                assert declaration['use_c10_dispatcher'] in ['with_codegenerated_unboxing_wrapper', 'full']
+                declaration['manual_kernel_registration'] = func.get('manual_kernel_registration', False)
+                declaration['category_override'] = func.get('category_override', '')
                 declaration['arguments'] = func.get('arguments', arguments)
-                declaration['type_method_definition_dispatch'] = func.get('dispatch', declaration['name'])
+                declaration['schema_order_arguments'] = func.get('schema_order_arguments', schema_order_arguments)
+                declaration['type_method_definition_dispatch'] = \
+                    parse_dispatch(fn_name, func.get('dispatch', declaration['name']))
                 declaration['python_module'] = func.get('python_module', '')
                 declarations.append(declaration)
             except Exception as e:

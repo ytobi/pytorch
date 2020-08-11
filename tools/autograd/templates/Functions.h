@@ -17,6 +17,7 @@ namespace torch { namespace autograd { namespace generated {
 using at::Scalar;
 using at::Tensor;
 using at::IntArrayRef;
+using at::ArrayRef;
 using at::Type;
 using at::TensorGeometry;
 using at::ScalarType;
@@ -32,17 +33,17 @@ inline std::vector<Tensor> unpack_list(at::ArrayRef<SavedVariable> xs) {
 }
 
 struct TypeAndSize {
-  TypeAndSize() : type(nullptr) {}
+  TypeAndSize() : options(at::TensorOptions()) {}
   /* implicit */
   TypeAndSize(const Tensor & t)
     : sizes(t.sizes().vec())
-    , type(&t.type()) {}
+    , options(t.options()) {}
 
-  Tensor zeros() { return at::zeros(sizes, *type); }
+  Tensor zeros() { return at::zeros(sizes, options); }
 
 private:
   std::vector<int64_t> sizes;
-  at::DeprecatedTypeProperties* type;
+  at::TensorOptions options;
 };
 
 ${autograd_function_declarations}

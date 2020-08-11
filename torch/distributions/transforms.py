@@ -3,10 +3,12 @@ import numbers
 import weakref
 
 import torch
+import torch.nn.functional as F
 from torch.distributions import constraints
 from torch.distributions.utils import (_sum_rightmost, broadcast_all,
                                        lazy_property)
 from torch.nn.functional import pad
+from torch.nn.functional import softplus
 
 __all__ = [
     'AbsTransform',
@@ -17,6 +19,7 @@ __all__ = [
     'LowerCholeskyTransform',
     'PowerTransform',
     'SigmoidTransform',
+    'TanhTransform',
     'SoftmaxTransform',
     'StackTransform',
     'StickBreakingTransform',
@@ -31,7 +34,7 @@ class Transform(object):
     det jacobians. They are primarily used in
     :class:`torch.distributions.TransformedDistribution`.
 
-    Caching is useful for tranforms whose inverses are either expensive or
+    Caching is useful for transforms whose inverses are either expensive or
     numerically unstable. Note that care must be taken with memoized values
     since the autograd graph may be reversed. For example while the following
     works with or without caching::
@@ -109,6 +112,13 @@ class Transform(object):
         """
         raise NotImplementedError
 
+    def with_cache(self, cache_size=1):
+        if self._cache_size == cache_size:
+            return self
+        if type(self).__init__ is Transform.__init__:
+            return type(self)(cache_size=cache_size)
+        raise NotImplementedError("{}.with_cache is not implemented".format(type(self)))
+
     def __eq__(self, other):
         return self is other
 
@@ -170,7 +180,7 @@ class _InverseTransform(Transform):
     This class is private; please instead use the ``Transform.inv`` property.
     """
     def __init__(self, transform):
-        super(_InverseTransform, self).__init__()
+        super(_InverseTransform, self).__init__(cache_size=transform._cache_size)
         self._inv = transform
 
     @constraints.dependent_property
@@ -197,6 +207,9 @@ class _InverseTransform(Transform):
     def inv(self):
         return self._inv
 
+    def with_cache(self, cache_size=1):
+        return self.inv.with_cache(cache_size).inv
+
     def __eq__(self, other):
         if not isinstance(other, _InverseTransform):
             return False
@@ -216,9 +229,13 @@ class ComposeTransform(Transform):
 
     Args:
         parts (list of :class:`Transform`): A list of transforms to compose.
+        cache_size (int): Size of cache. If zero, no caching is done. If one,
+            the latest single value is cached. Only 0 and 1 are supported.
     """
-    def __init__(self, parts):
-        super(ComposeTransform, self).__init__()
+    def __init__(self, parts, cache_size=0):
+        if cache_size:
+            parts = [part.with_cache(cache_size) for part in parts]
+        super(ComposeTransform, self).__init__(cache_size=cache_size)
         self.parts = parts
 
     def __eq__(self, other):
@@ -264,6 +281,11 @@ class ComposeTransform(Transform):
             inv._inv = weakref.ref(self)
         return inv
 
+    def with_cache(self, cache_size=1):
+        if self._cache_size == cache_size:
+            return self
+        return ComposeTransform(self.parts, cache_size=cache_size)
+
     def __call__(self, x):
         for part in self.parts:
             x = part(x)
@@ -273,11 +295,14 @@ class ComposeTransform(Transform):
         if not self.parts:
             return torch.zeros_like(x)
         result = 0
-        for part in self.parts:
-            y = part(x)
-            result = result + _sum_rightmost(part.log_abs_det_jacobian(x, y),
+        for part in self.parts[:-1]:
+            y_tmp = part(x)
+            result = result + _sum_rightmost(part.log_abs_det_jacobian(x, y_tmp),
                                              self.event_dim - part.event_dim)
-            x = y
+            x = y_tmp
+        part = self.parts[-1]
+        result = result + _sum_rightmost(part.log_abs_det_jacobian(x, y),
+                                         self.event_dim - part.event_dim)
         return result
 
     def __repr__(self):
@@ -325,6 +350,11 @@ class PowerTransform(Transform):
         super(PowerTransform, self).__init__(cache_size=cache_size)
         self.exponent, = broadcast_all(exponent)
 
+    def with_cache(self, cache_size=1):
+        if self._cache_size == cache_size:
+            return self
+        return PowerTransform(self.exponent, cache_size=cache_size)
+
     def __eq__(self, other):
         if not isinstance(other, PowerTransform):
             return False
@@ -340,6 +370,11 @@ class PowerTransform(Transform):
         return (self.exponent * y / x).abs().log()
 
 
+def _clipped_sigmoid(x):
+    finfo = torch.finfo(x.dtype)
+    return torch.clamp(torch.sigmoid(x), min=finfo.tiny, max=1. - finfo.eps)
+
+
 class SigmoidTransform(Transform):
     r"""
     Transform via the mapping :math:`y = \frac{1}{1 + \exp(-x)}` and :math:`x = \text{logit}(y)`.
@@ -353,13 +388,51 @@ class SigmoidTransform(Transform):
         return isinstance(other, SigmoidTransform)
 
     def _call(self, x):
-        return torch.sigmoid(x)
+        return _clipped_sigmoid(x)
 
     def _inverse(self, y):
+        finfo = torch.finfo(y.dtype)
+        y = y.clamp(min=finfo.tiny, max=1. - finfo.eps)
         return y.log() - (-y).log1p()
 
     def log_abs_det_jacobian(self, x, y):
-        return -(y.reciprocal() + (1 - y).reciprocal()).log()
+        return -F.softplus(-x) - F.softplus(x)
+
+
+class TanhTransform(Transform):
+    r"""
+    Transform via the mapping :math:`y = \tanh(x)`.
+
+    It is equivalent to
+    ```
+    ComposeTransform([AffineTransform(0., 2.), SigmoidTransform(), AffineTransform(-1., 2.)])
+    ```
+    However this might not be numerically stable, thus it is recommended to use `TanhTransform`
+    instead.
+
+    Note that one should use `cache_size=1` when it comes to `NaN/Inf` values.
+
+    """
+    domain = constraints.real
+    codomain = constraints.interval(-1.0, 1.0)
+    bijective = True
+    sign = +1
+
+    def __eq__(self, other):
+        return isinstance(other, TanhTransform)
+
+    def _call(self, x):
+        return x.tanh()
+
+    def _inverse(self, y):
+        # We do not clamp to the boundary here as it may degrade the performance of certain algorithms.
+        # one should use `cache_size=1` instead
+        return torch.atanh(y)
+
+    def log_abs_det_jacobian(self, x, y):
+        # We use a formula that is more numerically stable, see details in the following link
+        # https://github.com/tensorflow/probability/blob/master/tensorflow_probability/python/bijectors/tanh.py#L69-L80
+        return 2. * (math.log(2.) - x - softplus(-2. * x))
 
 
 class AbsTransform(Transform):
@@ -399,6 +472,11 @@ class AffineTransform(Transform):
         self.loc = loc
         self.scale = scale
         self.event_dim = event_dim
+
+    def with_cache(self, cache_size=1):
+        if self._cache_size == cache_size:
+            return self
+        return AffineTransform(self.loc, self.scale, self.event_dim, cache_size=cache_size)
 
     def __eq__(self, other):
         if not isinstance(other, AffineTransform):
@@ -494,23 +572,27 @@ class StickBreakingTransform(Transform):
         return isinstance(other, StickBreakingTransform)
 
     def _call(self, x):
-        offset = (x.shape[-1] + 1) - x.new([1]).expand(x.shape).cumsum(-1)
-        z = torch.sigmoid(x - offset.log())
+        offset = x.shape[-1] + 1 - x.new_ones(x.shape[-1]).cumsum(-1)
+        z = _clipped_sigmoid(x - offset.log())
         z_cumprod = (1 - z).cumprod(-1)
         y = pad(z, (0, 1), value=1) * pad(z_cumprod, (1, 0), value=1)
         return y
 
     def _inverse(self, y):
-        shape = y.shape[:-1] + (y.shape[-1] - 1,)
-        offset = (shape[-1] + 1) - y.new([1]).expand(shape).cumsum(-1)
-        sf = (1 - y.cumsum(-1))[..., :-1]
-        x = y[..., :-1].log() - sf.log() + offset.log()
+        y_crop = y[..., :-1]
+        offset = y.shape[-1] - y.new_ones(y_crop.shape[-1]).cumsum(-1)
+        sf = 1 - y_crop.cumsum(-1)
+        # we clamp to make sure that sf is positive which sometimes does not
+        # happen when y[-1] ~ 0 or y[:-1].sum() ~ 1
+        sf = torch.clamp(sf, min=torch.finfo(y.dtype).tiny)
+        x = y_crop.log() - sf.log() + offset.log()
         return x
 
     def log_abs_det_jacobian(self, x, y):
-        offset = (x.shape[-1] + 1) - x.new([1]).expand(x.shape).cumsum(-1)
-        z = torch.sigmoid(x - offset.log())
-        detJ = ((1 - z).log() + y[..., :-1].log()).sum(-1)
+        offset = x.shape[-1] + 1 - x.new_ones(x.shape[-1]).cumsum(-1)
+        x = x - offset.log()
+        # use the identity 1 - sigmoid(x) = exp(-x) * sigmoid(x)
+        detJ = (-x + F.logsigmoid(x) + y[..., :-1].log()).sum(-1)
         return detJ
 
 
@@ -529,19 +611,11 @@ class LowerCholeskyTransform(Transform):
     def __eq__(self, other):
         return isinstance(other, LowerCholeskyTransform)
 
-    def _call_on_event(self, x):
-        return x.tril(-1) + x.diag().exp().diag()
-
-    def _inverse_on_event(self, y):
-        return y.tril(-1) + y.diag().log().diag()
-
     def _call(self, x):
-        flat_x = x.reshape((-1,) + x.shape[-2:])
-        return torch.stack([self._call_on_event(flat_x[i]) for i in range(flat_x.size(0))]).view(x.shape)
+        return x.tril(-1) + x.diagonal(dim1=-2, dim2=-1).exp().diag_embed()
 
     def _inverse(self, y):
-        flat_y = y.contiguous().view((-1,) + y.shape[-2:])
-        return torch.stack([self._inverse_on_event(flat_y[i]) for i in range(flat_y.size(0))]).view(y.shape)
+        return y.tril(-1) + y.diagonal(dim1=-2, dim2=-1).log().diag_embed()
 
 
 class CatTransform(Transform):
@@ -557,9 +631,11 @@ class CatTransform(Transform):
        t = CatTransform([t0, t0], dim=0, lengths=[20, 20])
        y = t(x)
     """
-    def __init__(self, tseq, dim=0, lengths=None):
+    def __init__(self, tseq, dim=0, lengths=None, cache_size=0):
         assert all(isinstance(t, Transform) for t in tseq)
-        super(CatTransform, self).__init__()
+        if cache_size:
+            tseq = [t.with_cache(cache_size) for t in tseq]
+        super(CatTransform, self).__init__(cache_size=cache_size)
         self.transforms = list(tseq)
         if lengths is None:
             lengths = [1] * len(self.transforms)
@@ -570,6 +646,11 @@ class CatTransform(Transform):
     @lazy_property
     def length(self):
         return sum(self.lengths)
+
+    def with_cache(self, cache_size=1):
+        if self._cache_size == cache_size:
+            return self
+        return CatTransform(self.tseq, self.dim, self.lengths, cache_size)
 
     def _call(self, x):
         assert -x.dim() <= self.dim < x.dim()
@@ -633,11 +714,18 @@ class StackTransform(Transform):
        t = StackTransform([ExpTransform(), identity_transform], dim=1)
        y = t(x)
     """
-    def __init__(self, tseq, dim=0):
+    def __init__(self, tseq, dim=0, cache_size=0):
         assert all(isinstance(t, Transform) for t in tseq)
-        super(StackTransform, self).__init__()
+        if cache_size:
+            tseq = [t.with_cache(cache_size) for t in tseq]
+        super(StackTransform, self).__init__(cache_size=cache_size)
         self.transforms = list(tseq)
         self.dim = dim
+
+    def with_cache(self, cache_size=1):
+        if self._cache_size == cache_size:
+            return self
+        return StackTransform(self.transforms, self.dim, cache_size)
 
     def _slice(self, z):
         return [z.select(self.dim, i) for i in range(z.size(self.dim))]

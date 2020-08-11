@@ -7,11 +7,11 @@ from __future__ import unicode_literals
 
 import ctypes
 import os
-
+from threading import Lock
 from caffe2.python import core, extension_loader
 
 
-def InitOpsLibrary(name):
+def InitOpsLibrary(name, trigger_lazy=True):
     """Loads a dynamic library that contains custom operators into Caffe2.
 
     Since Caffe2 uses static variable registration, you can optionally load a
@@ -32,19 +32,21 @@ def InitOpsLibrary(name):
         # time when an actual call is made.
         print('Ignoring {} as it is not a valid file.'.format(name))
         return
-    _init_impl(name)
+    _init_impl(name, trigger_lazy=trigger_lazy)
 
 
 _IMPORTED_DYNDEPS = set()
+dll_lock = Lock()
 
 
 def GetImportedOpsLibraries():
     return _IMPORTED_DYNDEPS
 
 
-def _init_impl(path):
-    _IMPORTED_DYNDEPS.add(path)
-    with extension_loader.DlopenGuard():
-        ctypes.CDLL(path)
-    # reinitialize available ops
-    core.RefreshRegisteredOperators()
+def _init_impl(path, trigger_lazy=True):
+    with dll_lock:
+        _IMPORTED_DYNDEPS.add(path)
+        with extension_loader.DlopenGuard():
+            ctypes.CDLL(path)
+        # reinitialize available ops
+        core.RefreshRegisteredOperators(trigger_lazy)

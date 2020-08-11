@@ -1,5 +1,6 @@
 import re
 import os
+import yaml
 from .nested_dict import nested_dict
 
 
@@ -30,14 +31,14 @@ GENERATED_COMMENT = CodeTemplate(
     "@" + "generated from ${filename}")
 
 # Matches "foo" in "foo, bar" but not "foobar". Used to search for the
-# occurence of a parameter in the derivative formula
+# occurrence of a parameter in the derivative formula
 IDENT_REGEX = r'(^|\W){}($|\W)'
 
 
 # TODO: Use a real parser here; this will get bamboozled
 # by signatures that contain things like std::array<bool, 2> (note the space)
 def split_name_params(prototype):
-    name, params = re.match(r'(\w+)\((.*)\)', prototype).groups()
+    name, overload_name, params = re.match(r'(\w+)(\.\w+)?\((.*)\)', prototype).groups()
     return name, params.split(', ')
 
 
@@ -70,3 +71,24 @@ def write(dirname, name, template, env):
             f.write(new_val)
     else:
         print("Skipped writing {}".format(path))
+
+def is_tensor_method(declaration):
+    return 'Tensor' in declaration['method_of']
+
+def is_out_variant(decl):
+    return decl['name'].endswith('_out')
+
+def op_name_without_overload(decl):
+    name = decl['name'] if not is_out_variant(decl) else decl['name'][:-4]
+    return 'aten::{}'.format(name)
+
+def load_op_list_and_strip_overload(op_list, op_list_path):
+    if op_list is None and op_list_path is None:
+        return None
+    if op_list is None:
+        op_list = []
+    if op_list_path is not None:
+        with open(op_list_path, 'r') as f:
+            op_list += yaml.load(f, Loader=YamlLoader)
+    # strip out the overload part
+    return {opname.split('.', 1)[0] for opname in op_list}

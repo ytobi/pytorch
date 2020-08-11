@@ -10,7 +10,7 @@ class SobolEngine(object):
     This implementation of an engine for Sobol sequences is capable of
     sampling sequences up to a maximum dimension of 1111. It uses direction
     numbers to generate these sequences, and these numbers have been adapted
-    from `here <http://web.maths.unsw.edu.au/~fkuo/sobol/joe-kuo-old.1111>`_.
+    from `here <https://web.maths.unsw.edu.au/~fkuo/sobol/joe-kuo-old.1111>`_.
 
     References:
       - Art B. Owen. Scrambling Sobol and Niederreiter-Xing points.
@@ -28,7 +28,8 @@ class SobolEngine(object):
                                    sequences. Default: ``False``.
         seed (Int, optional): This is the seed for the scrambling. The seed
                               of the random number generator is set to this,
-                              if specified. Default: ``None``
+                              if specified. Otherwise, it uses a random seed.
+                              Default: ``None``
 
     Examples::
 
@@ -50,24 +51,29 @@ class SobolEngine(object):
         self.scramble = scramble
         self.dimension = dimension
 
-        self.sobolstate = torch.zeros(dimension, self.MAXBIT, dtype=torch.long)
+        cpu = torch.device("cpu")
+
+        self.sobolstate = torch.zeros(dimension, self.MAXBIT, device=cpu, dtype=torch.long)
         torch._sobol_engine_initialize_state_(self.sobolstate, self.dimension)
 
         if self.scramble:
-            g = torch.Generator()
             if self.seed is not None:
+                g = torch.Generator()
                 g.manual_seed(self.seed)
+            else:
+                g = None
 
-            self.shift = torch.mv(torch.randint(2, (self.dimension, self.MAXBIT), generator=g),
-                                  torch.pow(2, torch.arange(0, self.MAXBIT)))
+            shift_ints = torch.randint(2, (self.dimension, self.MAXBIT), device=cpu, generator=g)
+            self.shift = torch.mv(shift_ints, torch.pow(2, torch.arange(0, self.MAXBIT, device=cpu)))
 
-            ltm = torch.randint(2, (self.dimension, self.MAXBIT, self.MAXBIT), generator=g).tril()
+            ltm_dims = (self.dimension, self.MAXBIT, self.MAXBIT)
+            ltm = torch.randint(2, ltm_dims, device=cpu, generator=g).tril()
 
             torch._sobol_engine_scramble_(self.sobolstate, ltm, self.dimension)
         else:
-            self.shift = torch.zeros(self.dimension, dtype=torch.long)
+            self.shift = torch.zeros(self.dimension, device=cpu, dtype=torch.long)
 
-        self.quasi = self.shift.clone()
+        self.quasi = self.shift.clone(memory_format=torch.contiguous_format)
         self.num_generated = 0
 
     def draw(self, n=1, out=None, dtype=torch.float32):

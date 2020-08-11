@@ -60,10 +60,11 @@ void reflection_pad1d_out_template(
   int64_t dim_plane = 0;
   int64_t dim_w = 1;
   int64_t nbatch = 1;
-
-  TORCH_CHECK(input_.numel() > 0 &&
-    (input_.ndimension() == 2 || input_.ndimension() == 3), "non-empty 2D "
-    "or 3D (batch mode) tensor expected for input, but got: ", input_);
+  // allow dim=0 only in the batch dimension.
+  TORCH_CHECK(
+      (input_.ndimension() == 2 && input_.size(1) != 0) ||
+      (input_.ndimension() == 3 && input_.size(1) != 0 && input_.size(2) != 0),
+      "2D or 3D (batch mode) tensor expected for input, but got: ", input_);
 
   if (input_.ndimension() == 3) {
     nbatch = input_.size(0);
@@ -92,22 +93,42 @@ void reflection_pad1d_out_template(
   /* resize output */
   if (input.ndimension() == 2) {
     output.resize_({nplane, output_w});
-    AT_DISPATCH_FLOATING_TYPES(input.scalar_type(), "reflection_pad1d", [&] {
-      reflection_pad1d_out_frame<scalar_t>(
-        input.data<scalar_t>(), output.data<scalar_t>(),
-        nplane,
-        input_w, output_w,
-        pad_l);
-    });
+    if (input.is_quantized()) {
+      AT_DISPATCH_QINT_TYPES(input.scalar_type(), "qreflection_pad1d", [&]() {
+        reflection_pad1d_out_frame<scalar_t>(
+          input.data_ptr<scalar_t>(), output.data_ptr<scalar_t>(),
+          nplane,
+          input_w, output_w,
+          pad_l);
+      });
+    } else {
+      AT_DISPATCH_FLOATING_TYPES(input.scalar_type(), "reflection_pad1d", [&] {
+        reflection_pad1d_out_frame<scalar_t>(
+          input.data_ptr<scalar_t>(), output.data_ptr<scalar_t>(),
+          nplane,
+          input_w, output_w,
+          pad_l);
+      });
+    }
   } else {
     output.resize_({nbatch, nplane, output_w});
-    AT_DISPATCH_FLOATING_TYPES(input.scalar_type(), "reflection_pad1d", [&] {
-      reflection_pad1d_out_loop<scalar_t>(
-        input.data<scalar_t>(), output.data<scalar_t>(),
-        nbatch, nplane,
-        input_w, output_w,
-        pad_l);
-    });
+    if (input.is_quantized()) {
+      AT_DISPATCH_QINT_TYPES(input.scalar_type(), "qreflection_pad1d", [&]() {
+        reflection_pad1d_out_loop<scalar_t>(
+          input.data_ptr<scalar_t>(), output.data_ptr<scalar_t>(),
+          nbatch, nplane,
+          input_w, output_w,
+          pad_l);
+      });
+    } else {
+      AT_DISPATCH_FLOATING_TYPES(input.scalar_type(), "reflection_pad1d", [&] {
+        reflection_pad1d_out_loop<scalar_t>(
+          input.data_ptr<scalar_t>(), output.data_ptr<scalar_t>(),
+          nbatch, nplane,
+          input_w, output_w,
+          pad_l);
+      });
+    }
   }
 }
 
@@ -190,7 +211,7 @@ void reflection_pad1d_backward_out_template(
     AT_DISPATCH_FLOATING_TYPES(
       grad_input.scalar_type(), "reflection_pad1d_backward", [&] {
         reflection_pad1d_backward_out_frame(
-          grad_input.data<scalar_t>(), grad_output.data<scalar_t>(),
+          grad_input.data_ptr<scalar_t>(), grad_output.data_ptr<scalar_t>(),
           nplane,
           input_w, output_w,
           pad_l);
@@ -200,8 +221,8 @@ void reflection_pad1d_backward_out_template(
     AT_DISPATCH_FLOATING_TYPES(
       grad_input.scalar_type(), "reflection_pad1d_backward", [&] {
         reflection_pad1d_backward_out_loop(
-          grad_input.data<scalar_t>(),
-          grad_output.data<scalar_t>(),
+          grad_input.data_ptr<scalar_t>(),
+          grad_output.data_ptr<scalar_t>(),
           nbatch, nplane,
           input_w, output_w,
           pad_l);
@@ -280,9 +301,11 @@ void reflection_pad2d_out_template(
   int dim_slices = 0;
   int64_t nbatch = 1;
 
-  TORCH_CHECK(input_.numel() > 0 &&
-    (input_.ndimension() == 3 || input_.ndimension() == 4), "non-empty 3D or "
-    "4D (batch mode) tensor expected for input, but got: ", input_);
+  bool valid_dims = input_.size(1) != 0 && input_.size(2) != 0;
+  TORCH_CHECK(
+      (input_.ndimension() == 3 && valid_dims) ||
+      (input_.ndimension() == 4 && valid_dims && input_.size(3) != 0),
+      "3D or 4D (batch mode) tensor expected for input, but got: ", input_);
 
   if (input_.ndimension() == 4) {
     nbatch = input_.size(0);
@@ -325,7 +348,7 @@ void reflection_pad2d_out_template(
     output.resize_({nplane, output_h, output_w});
     AT_DISPATCH_FLOATING_TYPES(input.scalar_type(), "reflection_pad2d", [&] {
       reflection_pad2d_out_frame(
-        input.data<scalar_t>(), output.data<scalar_t>(),
+        input.data_ptr<scalar_t>(), output.data_ptr<scalar_t>(),
         nplane,
         input_w, input_h, output_w, output_h,
         pad_l, pad_t);
@@ -335,7 +358,7 @@ void reflection_pad2d_out_template(
     output.resize_({nbatch, nplane, output_h, output_w});
     AT_DISPATCH_FLOATING_TYPES(input.scalar_type(), "reflection_pad2d", [&] {
       reflection_pad2d_out_loop(
-        input.data<scalar_t>(), output.data<scalar_t>(),
+        input.data_ptr<scalar_t>(), output.data_ptr<scalar_t>(),
         nbatch, nplane,
         input_w, input_h, output_w, output_h,
         pad_l, pad_t);
@@ -451,7 +474,7 @@ void reflection_pad2d_backward_out_template(
     AT_DISPATCH_FLOATING_TYPES(
       grad_output.scalar_type(), "reflection_pad2d_backward", [&] {
         reflection_pad2d_backward_out_frame(
-          grad_input.data<scalar_t>(), grad_output.data<scalar_t>(),
+          grad_input.data_ptr<scalar_t>(), grad_output.data_ptr<scalar_t>(),
           nplane,
           input_w, input_h, output_w, output_h,
           pad_l, pad_t);
@@ -461,7 +484,7 @@ void reflection_pad2d_backward_out_template(
     AT_DISPATCH_FLOATING_TYPES(
       grad_output.scalar_type(), "reflection_pad2d_backward", [&] {
         reflection_pad2d_backward_out_loop(
-          grad_input.data<scalar_t>(), grad_output.data<scalar_t>(),
+          grad_input.data_ptr<scalar_t>(), grad_output.data_ptr<scalar_t>(),
           nbatch, nplane,
           input_w, input_h, output_w, output_h,
           pad_l, pad_t);
@@ -479,7 +502,18 @@ Tensor& reflection_pad1d_out_cpu(
 }
 
 Tensor reflection_pad1d_cpu(const Tensor& input, IntArrayRef padding) {
-  auto output = at::empty({0}, input.options());
+  Tensor output;
+  if (input.is_quantized()) {
+    if (input.qscheme() == kPerTensorAffine) {
+      output = at::_empty_affine_quantized({0}, input.options(),
+                                           input.q_scale(),
+                                           input.q_zero_point());
+    } else {
+      TORCH_CHECK(false, "Only per tensor quantization is supported");
+    }
+  } else {
+    output = at::empty({0}, input.options());
+  }
   reflection_pad1d_out_template(output, input, padding);
   return output;
 }
@@ -500,7 +534,7 @@ Tensor reflection_pad1d_backward_cpu(
     const Tensor& grad_output,
     const Tensor& input,
     IntArrayRef padding) {
-  auto grad_input = at::zeros_like(input);
+  auto grad_input = at::zeros_like(input, LEGACY_CONTIGUOUS_MEMORY_FORMAT);
   reflection_pad1d_backward_out_template(
     grad_input, grad_output, input, padding);
   return grad_input;
@@ -534,7 +568,7 @@ Tensor reflection_pad2d_backward_cpu(
     const Tensor& grad_output,
     const Tensor& input,
     IntArrayRef padding) {
-  auto grad_input = at::zeros_like(input);
+  auto grad_input = at::zeros_like(input, LEGACY_CONTIGUOUS_MEMORY_FORMAT);
   reflection_pad2d_backward_out_template(
     grad_input, grad_output, input, padding);
   return grad_input;

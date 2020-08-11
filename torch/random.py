@@ -2,9 +2,10 @@ import contextlib
 import warnings
 
 from torch._C import default_generator
+import torch
 
 
-def set_rng_state(new_state):
+def set_rng_state(new_state) -> None:
     r"""Sets the random number generator state.
 
     Args:
@@ -13,14 +14,14 @@ def set_rng_state(new_state):
     default_generator.set_state(new_state)
 
 
-def get_rng_state():
+def get_rng_state() -> torch.Tensor:
     r"""Returns the random number generator state as a `torch.ByteTensor`."""
     return default_generator.get_state()
 
 
-def manual_seed(seed):
+def manual_seed(seed) -> torch._C.Generator:
     r"""Sets the seed for generating random numbers. Returns a
-    `torch._C.Generator` object.
+    `torch.Generator` object.
 
     Args:
         seed (int): The desired seed.
@@ -28,13 +29,26 @@ def manual_seed(seed):
     seed = int(seed)
     import torch.cuda
 
-    if not torch.cuda._in_bad_fork:
+    if not torch.cuda._is_in_bad_fork():
         torch.cuda.manual_seed_all(seed)
 
     return default_generator.manual_seed(seed)
 
 
-def initial_seed():
+def seed() -> int:
+    r"""Sets the seed for generating random numbers to a non-deterministic
+    random number. Returns a 64 bit number used to seed the RNG.
+    """
+    seed = default_generator.seed()
+    import torch.cuda
+
+    if not torch.cuda._is_in_bad_fork():
+        torch.cuda.manual_seed_all(seed)
+
+    return seed
+
+
+def initial_seed() -> int:
     r"""Returns the initial seed for generating random numbers as a
     Python `long`.
     """
@@ -98,13 +112,11 @@ def fork_rng(devices=None, enabled=True, _caller="fork_rng", _devices_kw="device
     cpu_rng_state = torch.get_rng_state()
     gpu_rng_states = []
     for device in devices:
-        with torch.cuda.device(device):
-            gpu_rng_states.append(torch.cuda.get_rng_state())
+        gpu_rng_states.append(torch.cuda.get_rng_state(device))
 
     try:
         yield
     finally:
         torch.set_rng_state(cpu_rng_state)
         for device, gpu_rng_state in zip(devices, gpu_rng_states):
-            with torch.cuda.device(device):
-                torch.cuda.set_rng_state(gpu_rng_state)
+            torch.cuda.set_rng_state(gpu_rng_state, device)

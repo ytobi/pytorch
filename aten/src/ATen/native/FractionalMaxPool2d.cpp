@@ -1,5 +1,5 @@
-#include "ATen/ATen.h"
-#include "ATen/NativeFunctions.h"
+#include <ATen/ATen.h>
+#include <ATen/NativeFunctions.h>
 #include <ATen/Parallel.h>
 
 #include <tuple>
@@ -15,13 +15,15 @@ static std::vector<int> fractional_max_pool2d_generate_intervals(
   int inputSize,
   int outputSize,
   int poolSize) {
-  scalar_t alpha = static_cast<scalar_t>(inputSize - poolSize) /
-    static_cast<scalar_t>(outputSize - 1);
   std::vector<int> sequence(outputSize);
+  if (outputSize > 1) {
+    scalar_t alpha = static_cast<scalar_t>(inputSize - poolSize) /
+      static_cast<scalar_t>(outputSize - 1);
 
-  for (int i = 0; i < outputSize - 1; ++i) {
-    sequence[i] =
-      static_cast<int>((i + sample) * alpha) - static_cast<int>(sample * alpha);
+    for (int i = 0; i < outputSize - 1; ++i) {
+      sequence[i] =
+        static_cast<int>((i + sample) * alpha) - static_cast<int>(sample * alpha);
+    }
   }
   sequence[outputSize - 1] = inputSize - poolSize;
 
@@ -62,10 +64,10 @@ static void fractional_max_pool2d_out_single_batch_frame(
         for (w = 0; w < outputW; ++w) {
           int inputWStart = sequenceW[w];
 
+          int h2 = inputHStart, w2 = inputWStart;
           scalar_t maxVal = -std::numeric_limits<scalar_t>::infinity();
-          int64_t maxIndex = -1;
+          int64_t maxIndex = h2 * inputW + w2;
 
-          int h2, w2;
           for (h2 = inputHStart; h2 < inputHStart + poolSizeH; ++h2) {
             for (w2 = inputWStart; w2 < inputWStart + poolSizeW; ++w2) {
               AT_ASSERT(h2 >= 0 && h2 < inputH);
@@ -73,15 +75,12 @@ static void fractional_max_pool2d_out_single_batch_frame(
 
               int planeIndex = h2 * inputW + w2;
               scalar_t val = inputForPlane[planeIndex];
-              if (val > maxVal) {
+              if (val > maxVal || std::isnan(val)) {
                 maxVal = val;
                 maxIndex = planeIndex;
               }
             }
           }
-
-          AT_ASSERT(maxVal != -std::numeric_limits<scalar_t>::infinity());
-          AT_ASSERT(maxIndex != -1);
 
           outputForPlane[h * outputW + w] = maxVal;
           indicesForPlane[h * outputW + w] = maxIndex;
@@ -180,10 +179,10 @@ void fractional_max_pool2d_out_cpu_template(
 
   AT_DISPATCH_FLOATING_TYPES(input.scalar_type(),
   "fractional_max_pool2d_out_frame", [&] {
-    auto input_data = input.data<scalar_t>();
-    auto output_data = output.data<scalar_t>();
-    auto indices_data = indices.data<int64_t>();
-    auto randomSamples_data = randomSamples.data<scalar_t>();
+    auto input_data = input.data_ptr<scalar_t>();
+    auto output_data = output.data_ptr<scalar_t>();
+    auto indices_data = indices.data_ptr<int64_t>();
+    auto randomSamples_data = randomSamples.data_ptr<scalar_t>();
     fractional_max_pool2d_out_frame<scalar_t>(
       input_data,
       output_data,
@@ -296,9 +295,9 @@ Tensor& fractional_max_pool2d_backward_out_cpu_template(
   /* backprop */
   AT_DISPATCH_FLOATING_TYPES(
     input.scalar_type(), "fractional_max_pool2d_backward_out_frame", [&] {
-      auto gradInput_data = gradInput.data<scalar_t>();
-      auto gradOutput_data = gradOutput.data<scalar_t>();
-      auto indices_data = indices.data<int64_t>();
+      auto gradInput_data = gradInput.data_ptr<scalar_t>();
+      auto gradOutput_data = gradOutput.data_ptr<scalar_t>();
+      auto indices_data = indices.data_ptr<int64_t>();
       fractional_max_pool2d_backward_out_frame<scalar_t>(
         gradInput_data,
         gradOutput_data,

@@ -15,7 +15,13 @@
 #include <TH/THGenerateAllTypes.h>
 
 #include <torch/csrc/generic/utils.cpp>
+#include <TH/THGenerateComplexTypes.h>
+
+#include <torch/csrc/generic/utils.cpp>
 #include <TH/THGenerateHalfType.h>
+
+#include <torch/csrc/generic/utils.cpp>
+#include <TH/THGenerateBFloat16Type.h>
 
 #include <torch/csrc/WindowsTorchApiMacro.h>
 #include <torch/csrc/generic/utils.cpp>

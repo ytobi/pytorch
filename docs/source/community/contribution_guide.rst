@@ -7,8 +7,8 @@ building deep neural networks built on tape-based autograd systems.
 The PyTorch Contribution Process
 --------------------------------
 
-The PyTorch organization is governed by `PyTorch
-Governance </docs/community/governance.html>`__.
+The PyTorch organization is governed by :doc:`PyTorch
+Governance <governance>`.
 
 The PyTorch development process involves a healthy amount of open
 discussions between the core development team and the community.
@@ -49,6 +49,13 @@ here is the basic process.
       operator/optimizer?” Giving evidence for its utility, e.g., usage
       in peer reviewed papers, or existence in other frameworks, helps a
       bit when making this case.
+
+      - **Adding operators / algorithms from recently-released research**
+        is generally not accepted, unless there is overwhelming evidence that
+        this newly published work has ground-breaking results and will eventually
+        become a standard in the field. If you are not sure where your method falls,
+        open an issue first before implementing a PR.
+
    -  Core changes and refactors can be quite difficult to coordinate,
       as the pace of development on PyTorch master is quite fast.
       Definitely reach out about fundamental or cross-cutting changes;
@@ -120,7 +127,7 @@ the best entrance point are great places to start.
 Adding Tutorials
 ~~~~~~~~~~~~~~~~
 
-A great deal of the tutorials on `pytorch.org <http://pytorch.org/>`__
+A great deal of the tutorials on `pytorch.org <https://pytorch.org/>`__
 come from the community itself and we welcome additional contributions.
 To learn more about how to contribute a new tutorial you can learn more
 here: `PyTorch.org Tutorial Contribution Guide on
@@ -272,11 +279,12 @@ Common Mistakes To Avoid
    related to your changes.
 
 Frequently asked questions
+--------------------------
 
 -  **How can I contribute as a reviewer?** There is lots of value if
    community developer reproduce issues, try out new functionality, or
    otherwise help us identify or troubleshoot issues. Commenting on
-   tasks or pull requests with your enviroment details is helpful and
+   tasks or pull requests with your environment details is helpful and
    appreciated.
 -  **CI tests failed, what does it mean?** Maybe you need to merge with
    master or rebase with latest changes. Pushing your changes should
@@ -297,13 +305,13 @@ Python Docs
 ~~~~~~~~~~~
 
 PyTorch documentation is generated from python source using
-`Sphinx <http://www.sphinx-doc.org/en/master/>`__. Generated HTML is
+`Sphinx <https://www.sphinx-doc.org/en/master/>`__. Generated HTML is
 copied to the docs folder in the master branch of
 `pytorch.github.io <https://github.com/pytorch/pytorch.github.io/tree/master/docs>`__,
 and is served via GitHub pages.
 
--  Site: http://pytorch.org/docs
--  GitHub: http://github.com/pytorch/pytorch/docs
+-  Site: https://pytorch.org/docs
+-  GitHub: https://github.com/pytorch/pytorch/tree/master/docs
 -  Served from:
    `https://github.com/pytorch/pytorch.github.io/tree/master/doc <https://github.com/pytorch/pytorch.github.io/tree/master/docs>`__
 
@@ -315,7 +323,7 @@ are built on a special server and the resulting files are copied to the
 https://github.com/pytorch/cppdocs repo, and are served from GitHub
 pages.
 
--  Site: http://pytorch.org/cppdocs
+-  Site: https://pytorch.org/cppdocs
 -  GitHub: https://github.com/pytorch/pytorch/tree/master/docs/cpp
 -  Served from: https://github.com/pytorch/cppdocs
 
@@ -329,8 +337,8 @@ Tutorials are built using
 from executable python sources files, or from restructured-text (rst)
 files.
 
--  Site: http://pytorch.org/tutorials
--  GitHub: http://github.com/pytorch/tutorials
+-  Site: https://pytorch.org/tutorials
+-  GitHub: https://github.com/pytorch/tutorials
 
 Tutorials Build Overview
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~

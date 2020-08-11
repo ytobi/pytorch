@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 """
 This module models the tree of configuration variants
 for "smoketest" builds.
@@ -7,9 +5,6 @@ for "smoketest" builds.
 Each subclass of ConfigNode represents a layer of the configuration hierarchy.
 These tree nodes encapsulate the logic for whether a branch of the hierarchy
 should be "pruned".
-
-In addition to generating config.yml content, the tree is also traversed
-to produce a visualization of config dimensions.
 """
 
 from collections import OrderedDict
@@ -36,15 +31,13 @@ def get_processor_arch_name(cuda_version):
 
 LINUX_PACKAGE_VARIANTS = OrderedDict(
     manywheel=[
-        "2.7m",
-        "2.7mu",
-        "3.5m",
         "3.6m",
         "3.7m",
+        "3.8m",
     ],
     conda=dimensions.STANDARD_PYTHON_VERSIONS,
     libtorch=[
-        "2.7m",
+        "3.7m",
     ],
 )
 
@@ -54,15 +47,38 @@ CONFIG_TREE_DATA = OrderedDict(
         wheel=dimensions.STANDARD_PYTHON_VERSIONS,
         conda=dimensions.STANDARD_PYTHON_VERSIONS,
         libtorch=[
-            "2.7",
+            "3.7",
+        ],
+    )),
+    # Skip CUDA-9.2 builds on Windows
+    windows=([v for v in dimensions.CUDA_VERSIONS if v != '92'], OrderedDict(
+        wheel=dimensions.STANDARD_PYTHON_VERSIONS,
+        conda=dimensions.STANDARD_PYTHON_VERSIONS,
+        libtorch=[
+            "3.7",
         ],
     )),
 )
 
+# GCC config variants:
+#
+# All the nightlies (except libtorch with new gcc ABI) are built with devtoolset7,
+# which can only build with old gcc ABI. It is better than devtoolset3
+# because it understands avx512, which is needed for good fbgemm performance.
+#
+# Libtorch with new gcc ABI is built with gcc 5.4 on Ubuntu 16.04.
+LINUX_GCC_CONFIG_VARIANTS = OrderedDict(
+    manywheel=['devtoolset7'],
+    conda=['devtoolset7'],
+    libtorch=[
+        "devtoolset7",
+        "gcc5.4_cxx11-abi",
+    ],
+)
 
-DEVTOOLSET_VERSIONS = [
-    3,
-    7,
+WINDOWS_LIBTORCH_CONFIG_VARIANTS = [
+    "debug",
+    "release",
 ]
 
 
@@ -97,27 +113,39 @@ class PackageFormatConfigNode(ConfigNode):
         self.props["package_format"] = package_format
 
     def get_children(self):
-        if self.find_prop("os_name") == "linux" and self.find_prop("package_format") != "conda":
-            return [LinuxGccConfigNode(self, v) for v in DEVTOOLSET_VERSIONS]
+        if self.find_prop("os_name") == "linux":
+            return [LinuxGccConfigNode(self, v) for v in LINUX_GCC_CONFIG_VARIANTS[self.find_prop("package_format")]]
+        elif self.find_prop("os_name") == "windows" and self.find_prop("package_format") == "libtorch":
+            return [WindowsLibtorchConfigNode(self, v) for v in WINDOWS_LIBTORCH_CONFIG_VARIANTS]
         else:
             return [ArchConfigNode(self, v) for v in self.find_prop("cuda_versions")]
 
 
 class LinuxGccConfigNode(ConfigNode):
-    def __init__(self, parent, devtoolset_version):
-        super(LinuxGccConfigNode, self).__init__(parent, "DEVTOOLSET=" + str(devtoolset_version))
+    def __init__(self, parent, gcc_config_variant):
+        super(LinuxGccConfigNode, self).__init__(parent, "GCC_CONFIG_VARIANT=" + str(gcc_config_variant))
 
-        self.props["devtoolset_version"] = devtoolset_version
+        self.props["gcc_config_variant"] = gcc_config_variant
 
     def get_children(self):
         cuda_versions = self.find_prop("cuda_versions")
 
         # XXX devtoolset7 on CUDA 9.0 is temporarily disabled
         # see https://github.com/pytorch/pytorch/issues/20066
-        if self.find_prop("devtoolset_version") == 7:
+        if self.find_prop("gcc_config_variant") == 'devtoolset7':
             cuda_versions = filter(lambda x: x != "90", cuda_versions)
 
         return [ArchConfigNode(self, v) for v in cuda_versions]
+
+
+class WindowsLibtorchConfigNode(ConfigNode):
+    def __init__(self, parent, libtorch_config_variant):
+        super(WindowsLibtorchConfigNode, self).__init__(parent, "LIBTORCH_CONFIG_VARIANT=" + str(libtorch_config_variant))
+
+        self.props["libtorch_config_variant"] = libtorch_config_variant
+
+    def get_children(self):
+        return [ArchConfigNode(self, v) for v in self.find_prop("cuda_versions")]
 
 
 class ArchConfigNode(ConfigNode):
@@ -137,12 +165,10 @@ class PyVersionConfigNode(ConfigNode):
         self.props["pyver"] = pyver
 
     def get_children(self):
-
-        smoke = self.find_prop("smoke")
         package_format = self.find_prop("package_format")
         os_name = self.find_prop("os_name")
 
-        has_libtorch_variants = smoke and package_format == "libtorch" and os_name == "linux"
+        has_libtorch_variants = package_format == "libtorch" and os_name == "linux"
         linking_variants = LINKING_DIMENSIONS if has_libtorch_variants else []
 
         return [LinkingVariantConfigNode(self, v) for v in linking_variants]

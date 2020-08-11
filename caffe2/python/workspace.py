@@ -19,12 +19,14 @@ import tempfile
 
 from caffe2.proto import caffe2_pb2
 from caffe2.python import scope, utils
+from caffe2.python.lazy import TriggerLazyImport
 
 import caffe2.python._import_c_extension as C
 
 logger = logging.getLogger(__name__)
 
 Blobs = C.blobs
+ResetBlob = C.reset_blob
 CreateBlob = C.create_blob
 CurrentWorkspace = C.current_workspace
 DeserializeBlob = C.deserialize_blob
@@ -38,6 +40,7 @@ Workspaces = C.workspaces
 BenchmarkNet = C.benchmark_net
 BenchmarkNetOnce = C.benchmark_net_once
 GetStats = C.get_stats
+CreateOfflineTensor = C.create_offline_tensor
 
 operator_tracebacks = defaultdict(dict)
 
@@ -58,6 +61,7 @@ if has_cuda_support:
         return np.asarray(C.get_cuda_peer_access_pattern())
 
     GetDeviceProperties = C.get_device_properties
+    GetGPUMemoryInfo = C.get_gpu_memory_info
 else:
     NumCudaDevices = lambda: 0 # noqa
     GetCUDAVersion = lambda: 0 # noqa
@@ -66,10 +70,12 @@ else:
 if has_hip_support:
     GpuDeviceType = caffe2_pb2.HIP
     NumGpuDevices = C.num_hip_devices
+    GetHIPVersion = C.get_hip_version
 
     def GetGpuPeerAccessPattern():
         return np.asarray(C.get_hip_peer_access_pattern())
     GetDeviceProperties = C.get_device_properties
+    GetGPUMemoryInfo = C.get_gpu_memory_info
 
 if not has_gpu_support:
     # setting cuda as the default GpuDeviceType as some tests
@@ -78,6 +84,7 @@ if not has_gpu_support:
     NumGpuDevices = lambda: 0 # noqa
     GetDeviceProperties = lambda x: None # noqa
     GetGpuPeerAccessPattern = lambda: np.array([]) # noqa
+    GetGPUMemoryInfo = lambda: None # noqa
 
 IsNUMAEnabled = C.is_numa_enabled
 GetNumNUMANodes = C.get_num_numa_nodes
@@ -167,6 +174,7 @@ def ResetWorkspace(root_folder=None):
 
 
 def CreateNet(net, overwrite=False, input_blobs=None):
+    TriggerLazyImport()
     if input_blobs is None:
         input_blobs = []
     for input_blob in input_blobs:
@@ -390,7 +398,7 @@ Int8Tensor = collections.namedtuple(
 
 def FetchInt8Blob(name):
     """Fetches an Int8 blob from the workspace. It shared backend implementation
-    with FetchBlob but it is recommened when fetching Int8 Blobs
+    with FetchBlob but it is recommended when fetching Int8 Blobs
 
     Inputs:
       name: the name of the Int8 blob - a string or a BlobReference
@@ -425,7 +433,7 @@ def FetchInt8BlobRealVal(name):
 
 def _Workspace_fetch_int8_blob(ws, name):
     """Fetches an Int8 blob from the workspace. It shared backend implementation
-    with FetchBlob but it is recommened when fetching Int8 Blobs
+    with FetchBlob but it is recommended when fetching Int8 Blobs
 
     Inputs:
       name: the name of the Int8 blob - a string or a BlobReference

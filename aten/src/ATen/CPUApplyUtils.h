@@ -154,7 +154,7 @@ struct strided_tensor_iter_fixed {
   void operator=(strided_tensor_iter_fixed const& x) = delete;
   strided_tensor_iter_fixed(strided_tensor_iter_fixed&&) = default;
   strided_tensor_iter_fixed(Tensor& tensor, bool sort_strides = false)
-      : data_(tensor.data<T>()) {
+      : data_(tensor.data_ptr<T>()) {
     std::memset(counter_, 0, sizeof(int64_t) * N);
     if (tensor.dim() > 0) {
       std::memcpy(
@@ -183,7 +183,7 @@ struct strided_tensor_iter {
   void operator=(strided_tensor_iter const& x) = delete;
   strided_tensor_iter(strided_tensor_iter&&) = default;
   strided_tensor_iter(Tensor& tensor)
-      : data_(tensor.data<T>()),
+      : data_(tensor.data_ptr<T>()),
         dim_(tensor.ndimension()),
         counter_(dim_, 0),
         sizes_(tensor.sizes().vec()),
@@ -334,27 +334,12 @@ apply_op(int64_t numel, int64_t offset, const Op& op, Args... iters) {
 /*
   Apply a pointwise operator to sequence of tensors
 
-  The calling convention for op is a function/functor that takes takes the same
+  The calling convention for op is a function/functor that takes the same
   number of pointers of type scalar as the number of given tensors. For example,
   to compute a = b * c, op would be of the form:
   [](scalar* a_val, const scalar* b_val, const scalar* c_val) { a_val[0] =
   b_val[0] * c_val[0]; };
 */
-
-template <typename scalar1, typename Op>
-inline void CPU_tensor_apply1(Tensor tensor1, const Op op) {
-  if (!_apply_preamble({tensor1}))
-    return;
-  if (tensor1.ndimension() < 8) {
-    apply_op(
-        tensor1.numel(),
-        0,
-        op,
-        strided_tensor_iter_fixed<scalar1, 8>(tensor1, true));
-  } else {
-    apply_op(tensor1.numel(), 0, op, strided_tensor_iter<scalar1>(tensor1));
-  }
-}
 
 template <typename scalar1, typename scalar2, typename Op>
 inline void CPU_tensor_apply2(Tensor tensor1, Tensor tensor2, const Op op) {

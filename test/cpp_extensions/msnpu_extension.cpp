@@ -1,93 +1,65 @@
 #include <torch/extension.h>
-
-#include <ATen/ExtensionBackendRegistration.h>
+#include <torch/library.h>
 
 using namespace at;
 
 static int test_int;
 
-Tensor get_dtype_tensor(caffe2::TypeMeta dtype) {
+Tensor get_tensor(caffe2::TypeMeta dtype, IntArrayRef size) {
   auto tensor_impl = c10::make_intrusive<TensorImpl, UndefinedTensorImpl>(
       Storage(
-          dtype, 0, at::DataPtr(nullptr, Device(DeviceType::MSNPU, 0)), nullptr, false),
-      MSNPUTensorId());
+          Storage::use_byte_size_t(),
+          0,
+          at::DataPtr(nullptr, Device(DeviceType::MSNPU, 0)),
+          nullptr,
+          false),
+      DispatchKey::MSNPU,
+      dtype);
+  // This is a hack to workaround the shape checks in _convolution.
+  tensor_impl->set_sizes_contiguous(size);
   return Tensor(std::move(tensor_impl));
 }
 
-Tensor zeros_override(IntArrayRef size, const TensorOptions & options) {
+Tensor empty_override(IntArrayRef size, c10::optional<ScalarType> dtype, c10::optional<Layout> layout, c10::optional<Device> device, c10::optional<bool> pin_memory, c10::optional<c10::MemoryFormat> optional_memory_format) {
   test_int = 0;
-  return get_dtype_tensor(options.dtype());
+  caffe2::TypeMeta typeMeta;
+  if (dtype.has_value()) {
+    typeMeta = scalarTypeToTypeMeta(*dtype);
+  }
+  return get_tensor(typeMeta, size);
 }
 
 Tensor add_override(const Tensor & a, const Tensor & b , Scalar c) {
   test_int = 1;
-  return get_dtype_tensor(a.dtype());
+  return get_tensor(a.dtype(), a.sizes());
 }
 
-Tensor sum_override(const Tensor & self) {
+Tensor fake_convolution(
+    const Tensor& input, const Tensor& weight, const c10::optional<Tensor>& bias,
+    IntArrayRef stride, IntArrayRef padding, IntArrayRef dilation,
+    bool transposed, IntArrayRef output_padding, int64_t groups) {
   test_int = 2;
-  return get_dtype_tensor(self.dtype());
+  // Only the first 2 dimension of output shape is correct.
+  return get_tensor(input.dtype(), {input.size(0), weight.size(0), input.size(2), input.size(3)});
 }
 
-// needed for sum backwards
-Tensor expand_override(const Tensor & self, IntArrayRef size, bool implicit) {
-  return get_dtype_tensor(self.dtype());
+std::tuple<Tensor,Tensor,Tensor> fake_convolution_backward(
+        const Tensor & grad_output, const Tensor & input, const Tensor & weight,
+        IntArrayRef stride, IntArrayRef padding,
+        IntArrayRef dilation, bool transposed, IntArrayRef output_padding,
+        int64_t groups, std::array<bool,3> output_mask) {
+    test_int = 3;
+    return std::tuple<Tensor, Tensor, Tensor>(
+            get_tensor(input.dtype(), input.sizes()),
+            get_tensor(weight.dtype(), weight.sizes()),
+            get_tensor(input.dtype(), {}));
 }
 
-
-Tensor kl_div_override(
-    const Tensor & self, const Tensor & target, int64_t reduction) {
-  test_int = 3;
-  return get_dtype_tensor(self.dtype());
-}
-
-Tensor kl_div_backward_override(
-    const Tensor & grad_output,
-    const Tensor & self,
-    const Tensor & target,
-    int64_t reduction) {
-  test_int = 4;
-  return get_dtype_tensor(self.dtype());
-}
-
-// numel and ones_like are needed for autograd backwards
-int64_t numel_override(const Tensor & self) {
-  return 1;
-}
-
-Tensor ones_like_override(const Tensor & self, const TensorOptions & options) {
-  return get_dtype_tensor(options.dtype());
-}
-
-void init_msnpu_extension() {
-  register_extension_backend_op(
-    Backend::MSNPU,
-    "zeros(IntArrayRef size, TensorOptions options) -> Tensor", &zeros_override);
-  register_extension_backend_op(
-    Backend::MSNPU,
-    "add(Tensor self, Tensor other, Scalar alpha) -> Tensor", &add_override);
-  register_extension_backend_op(
-    Backend::MSNPU,
-    "sum(Tensor self) -> Tensor", &sum_override);
-  register_extension_backend_op(
-    Backend::MSNPU,
-    "expand(Tensor self, IntArrayRef size, bool implicit) -> Tensor",
-    &expand_override);
-  register_extension_backend_op(
-    Backend::MSNPU,
-    "kl_div(Tensor self, Tensor target, int64_t reduction) -> Tensor",
-    &kl_div_override);
-  register_extension_backend_op(
-    Backend::MSNPU,
-    "kl_div_backward(Tensor grad_output, Tensor self, Tensor target, int64_t reduction) -> Tensor",
-    &kl_div_backward_override);
-  register_extension_backend_op(
-    Backend::MSNPU,
-    "numel(Tensor self) -> int64_t", &numel_override);
-  register_extension_backend_op(
-    Backend::MSNPU,
-    "ones_like(Tensor self, TensorOptions options) -> Tensor",
-    &ones_like_override);
+TORCH_LIBRARY_IMPL(aten, MSNPU, m) {
+  m.impl_UNBOXED("empty.memory_format",                empty_override);
+  m.impl_UNBOXED("add.Tensor",                         add_override);
+  m.impl_UNBOXED("convolution_overrideable",           fake_convolution);
+  m.impl_UNBOXED("convolution_backward_overrideable",  fake_convolution_backward);
 }
 
 // TODO: Extend this to exercise multi-device setting.  In that case,
@@ -124,6 +96,25 @@ struct MSNPUGuardImpl final : public c10::impl::DeviceGuardImplInterface {
   DeviceIndex deviceCount() const noexcept override {
     return 1;
   }
+
+  // Event-related functions
+  void record(void** event,
+    const Stream& stream,
+    const DeviceIndex device_index,
+    const EventFlag flag) const override {
+    TORCH_CHECK(false, "MSNPU backend doesn't support events.");
+  }
+  void block(
+    void* event,
+    const Stream& stream) const override {
+    TORCH_CHECK(false, "MSNPU backend doesn't support events.");
+  }
+  bool queryEvent(void* event) const override {
+    TORCH_CHECK(false, "MSNPU backend doesn't support events.");
+  }
+  void destroyEvent(
+    void* event,
+    const DeviceIndex device_index) const noexcept override { }
 };
 
 constexpr DeviceType MSNPUGuardImpl::static_type;
@@ -134,6 +125,5 @@ int get_test_int() {
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-  m.def("init_msnpu_extension", &init_msnpu_extension);
   m.def("get_test_int", &get_test_int);
 }

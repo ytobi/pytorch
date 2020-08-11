@@ -59,13 +59,21 @@ template <typename rT, typename T, typename... Args>
 struct CAFFE2_API DispatchStub<rT (*)(Args...), T> {
   using FnPtr = rT (*) (Args...);
 
+  DispatchStub() = default;
+  DispatchStub(const DispatchStub&) = delete;
+  DispatchStub& operator=(const DispatchStub&) = delete;
+
   template <typename... ArgTypes>
   rT operator()(DeviceType device_type, ArgTypes&&... args) {
     if (device_type == DeviceType::CPU) {
-      if (!cpu_dispatch_ptr) {
-        cpu_dispatch_ptr = choose_cpu_impl();
+      // Use memory_order_relaxed here since even if two threads race,
+      // they will still compute the same value for cpu_dispatch_ptr.
+      auto fptr = cpu_dispatch_ptr.load(std::memory_order_relaxed);
+      if (!fptr) {
+        fptr = choose_cpu_impl();
+        cpu_dispatch_ptr.store(fptr, std::memory_order_relaxed);
       }
-      return (*cpu_dispatch_ptr)(std::forward<ArgTypes>(args)...);
+      return (*fptr)(std::forward<ArgTypes>(args)...);
     } else if (device_type == DeviceType::CUDA) {
       AT_ASSERTM(cuda_dispatch_ptr, "DispatchStub: missing CUDA kernel");
       return (*cuda_dispatch_ptr)(std::forward<ArgTypes>(args)...);
@@ -96,9 +104,17 @@ struct CAFFE2_API DispatchStub<rT (*)(Args...), T> {
     return DEFAULT;
   }
 
-  FnPtr cpu_dispatch_ptr = nullptr;
+// Fixing dispatch error in Windows debug builds.
+// See https://github.com/pytorch/pytorch/issues/22681 for more details.
+#if defined(_MSC_VER) && defined(_DEBUG)
+  std::atomic<FnPtr> cpu_dispatch_ptr;
+  FnPtr cuda_dispatch_ptr;
+  FnPtr hip_dispatch_ptr;
+#else
+  std::atomic<FnPtr> cpu_dispatch_ptr{nullptr};
   FnPtr cuda_dispatch_ptr = nullptr;
   FnPtr hip_dispatch_ptr = nullptr;
+#endif
   static FnPtr DEFAULT;
 #ifdef HAVE_AVX_CPU_DEFINITION
   static FnPtr AVX;
@@ -131,7 +147,11 @@ struct RegisterHIPDispatch {
 // not work with MSVC. So do a `using`-declaration if you need to pass in such
 // `fn`, e.g., grid_sampler_2d_backward_cpu_kernel in GridSampleKernel.h.
 #define DECLARE_DISPATCH(fn, name)         \
-  struct name : DispatchStub<fn, name> {}; \
+  struct name : DispatchStub<fn, name> {   \
+    name() = default;                      \
+    name(const name&) = delete;            \
+    name& operator=(const name&) = delete; \
+  };                                       \
   extern CAFFE2_API struct name name
 
 #define DEFINE_DISPATCH(name) struct name name

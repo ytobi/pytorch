@@ -15,7 +15,7 @@ import caffe2.python.ideep_test_util as mu
 def _tensor_splits(draw, add_axis=False):
     """Generates (axis, split_info, tensor_splits) tuples."""
     tensor = draw(hu.tensor(min_dim=2, min_value=4))  # Each dim has at least 4 elements.
-    axis = draw(st.integers(0, len(tensor.shape) - 1))
+    axis = draw(st.integers(-len(tensor.shape), len(tensor.shape) - 1))
     if add_axis:
         # Simple case: get individual slices along one axis, where each of them
         # is (N-1)-dimensional. The axis will be added back upon concatenation.
@@ -49,6 +49,7 @@ def _tensor_splits(draw, add_axis=False):
 class TestConcatSplitOps(hu.HypothesisTestCase):
     @given(tensor_splits=_tensor_splits(),
            **mu.gcs)
+    @settings(deadline=10000)
     def test_concat(self, tensor_splits, gc, dc):
         axis, _, splits = tensor_splits
 
@@ -65,6 +66,7 @@ class TestConcatSplitOps(hu.HypothesisTestCase):
     @given(tensor_splits=_tensor_splits(),
            split_as_arg=st.booleans(),
            **mu.gcs)
+    @settings(deadline=10000)
     def test_split(self, tensor_splits, split_as_arg, gc, dc):
         axis, split_info, splits = tensor_splits
 
@@ -97,6 +99,7 @@ class TestConcatSplitOps(hu.HypothesisTestCase):
         self.assertGradientChecks(gc, op, input_tensors, 0, outputs_with_grad)
 
     @given(tensor_splits=_tensor_splits(add_axis=True), **mu.gcs)
+    @settings(deadline=10000)
     def test_concat_add_axis(self, tensor_splits, gc, dc):
         axis, _, splits = tensor_splits
         op = core.CreateOperator(

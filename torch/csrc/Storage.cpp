@@ -24,10 +24,19 @@
 #include <TH/THGenerateAllTypes.h>
 
 #include <torch/csrc/generic/Storage.cpp>
+#include <TH/THGenerateComplexTypes.h>
+
+#include <torch/csrc/generic/Storage.cpp>
 #include <TH/THGenerateHalfType.h>
 
 #include <torch/csrc/generic/Storage.cpp>
 #include <TH/THGenerateBoolType.h>
+
+#include <torch/csrc/generic/Storage.cpp>
+#include <TH/THGenerateBFloat16Type.h>
+
+#include <torch/csrc/generic/Storage.cpp>
+#include <TH/THGenerateQTypes.h>
 
 template<>
 void THPPointer<THStorage>::free() {

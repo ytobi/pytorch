@@ -35,7 +35,7 @@ Each component is described in more detail below:
 ### `func`
 
 ```
-- func: func_name(ArgType arg0[=default], ArgType arg1[=default], ...) -> Return
+- func: func_name[.overload_name](ArgType arg0[=default], ArgType arg1[=default], ...) -> Return
 ```
 
 The `func` entry is a string describing the name of the function and its type
@@ -46,16 +46,16 @@ signature.
 - `Tensor`.  A `Tensor` argument translates into a C++ argument of type `const Tensor&`
   (except when the argument is "inplace"; in this case, it is simply `Tensor&`).
   A trailing `?`, as in `Tensor?`, indicates that the tensor argument is optional
-  and may be omitted by passing an undefined tensor.  When a function takes multiple
+  and may be omitted by passing c10::nullopt.  When a function takes multiple
   `Tensor` arguments, these tensors are assumed to be the same type (e.g.,
   if one argument is a `FloatTensor`, all other arguments are checked
-  to be `FloatTensor`s.)
+  to be `FloatTensor`s).
   `Tensor` or `Tensor?` must sometimes be annotated to indicate aliasing and mutability.
-  In general annotations can be defined via the following four situtations
-  `Tensor(a)` - `a` is a set of Tensors that may alias to the same data.
-  `Tensor(a!)` - `a` members of a may be written to thus mutating the underlying data.
-  `Tensor!` - shorthand for Tensor(fresh\_identifier!)
-  `Tensor(a! -> a|b)` - Tensor is in set `a`, written to, and after the write is in set `a` AND `b`.
+  In general annotations can be defined via the following four situations:
+  - `Tensor(a)` - `a` is a set of Tensors that may alias to the same data.
+  - `Tensor(a!)` - `a` members of a may be written to thus mutating the underlying data.
+  - `Tensor!` - shorthand for Tensor(fresh\_identifier!)
+  - `Tensor(a! -> a|b)` - Tensor is in set `a`, written to, and after the write is in set `a` AND `b`.
   For more details on when and why this needs to happen, please see the section on annotations.
 - `Tensor[]`.  A `Tensor[]` argument translates into a C++ argument of type `ArrayRef<Tensor>`
   (a.k.a. `TensorList`)
@@ -80,18 +80,18 @@ signature.
 - `*` is a special sentinel argument, which doesn't translate into an actual
   argument, but indicates that in the Python bindings, any subsequent arguments
   must be specified as keyword arguments (and cannot be provided positionally).
-- `?` is trailing question mark that annotate an argument to be an optional type, grep for
+- `?` is trailing question mark that annotates an argument to be an optional type. Grep for
   `optional` to find some example usages. In general, most functions will not need to use
   this, but there are some cases that we want to use optional for the different types:
-    - You want to pass in a `None` to a ATen function/method from Python, and handles the
-      None type in the C++ side. For example, `clamp(Tensor self, Scalar? min=None, Scalar? max=None)`
-      can take `None` for its `min` and `max` parameter, and do dispatch to different
-      backend if one of the parameters is `None`. Optional type can accept a `None` type
+    - You want to pass a `None` to an ATen function/method from Python and handle the
+      None type on the C++ side. For example, `clamp(Tensor self, Scalar? min=None, Scalar? max=None)`
+      can take `None` for its `min` and `max` parameter, but does not dispatch to different
+      backends if one of the parameters is `None`. Optional type can accept a `None` type
       (`nullopt` in C++) from Python and use the [C++ Optional class](https://en.cppreference.com/w/cpp/utility/optional) to interact with the parameters.
-    - You want a default value which is fine in Python but would cause ambiguity in C++.
+    - You want a default value, which is fine in Python, but would cause ambiguity in C++.
       For example, `norm(Tensor self, Scalar p=2, int dim, bool keepdim=False)` would
-      cause ambiguity in C++ since it default args must be adjacent and `p` could not
-      have a default value when `dim` does not. Therefore, we need to make `p` as a
+      cause ambiguity in C++ since its default args must be adjacent (`p` could not
+      have a default value when `dim` does not). Therefore, we need to make `p` as a
       optional Scalar, and make `p=2` when `p` is not passed in (nullopt).
     - You want a value to default to the same value as another argument (this cannot be
       expressed in C++ default arguments).
@@ -99,7 +99,9 @@ signature.
 Functions with no tensor inputs are called *factory functions*, and
 are handled specially by code generation.  If your function is behaving
 differently than another example, check first and see if one is a
-factory while another is not.
+factory while another is not. In some rare cases, factory function might have a
+tensor argument. In this case mark it with 'category_override: factory'
+explicitly.
 
 **Argument names.** Argument names are meaningful; downstream binding code may make use of the specific
 argument name you provide, and a rename of an argument name is considered a BC-breaking
@@ -123,7 +125,7 @@ Here are the supported default values:
 * Numbers (e.g., `0` or `5.0` for `int`, `float` and `int[]`
   with an explicit length (e.g., `int[2]`)--in the case of `int[]`
   a number is replicated to fill the length (e.g., `int[2] x=2`
-  is equivalent to `int[2] x=[2,2]`.
+  is equivalent to `int[2] x=[2,2]`).
 * Lists of numbers (e.g., `[0, 0]`) for `IntList`.
 * Booleans (e.g., `True`) for `bool`.
 * Empty initializer lists (e.g., `[]`) for `Tensor` (this implicitly changes
@@ -168,7 +170,29 @@ two functions:
 Note that argument type modifiers such as defaults and optional are not currently supported on Return.
 
 
-The declarations also support the following attributes:
+**Overloads.** You can register multiple functions with the same name and different
+function signatures if you give them unique overload names. An overload name
+is specified after the function name, separated by a dot.
+
+Overload names do not have to be globally unique, but must be unique in the set
+of all overloads for the same function. Overload names cannot be changed for
+backwards compatibility reasons. Please try to make overload names semantically
+meaningful. An overload name that just enumerates all the argument types isn't
+helpful. In many cases, a semantic name is clear from what the overload is doing
+differently. As a fallback, you can use the name or type of the first differing
+argument as an overload name.
+
+If you add a new overload to an existing function, please leave the existing
+overload names as they are (for backwards compatibility), but give the new
+overload a new, unique name.
+
+Not specifying an overload name is equivalent to specifying an empty overload
+name. If you add a new function with multiple overloads, give them unique
+overload names, at most one overload is allowed to have an empty overload name.
+
+
+The declarations also support the following attributes.
+
 
 ### `variants`
 
@@ -191,7 +215,7 @@ more complicated neural network layers (e.g., `conv2d`) and internal functions
 designed specifically for binding (e.g., `cudnn_convolution`).
 
 As we progress along our schema unification of the `func` schema with the JIT
-signatue schema, we must introduce features that allow us to increase compliance.
+signature schema, we must introduce features that allow us to increase compliance.
 One of these features are Tensor annotations. As of now we use naming conventions
 to indicate whether an argument of a function is going to be mutated and returned.
 
@@ -203,7 +227,7 @@ a) For an inplace operations such as `self.abs_()`
 b) for a function with an output keyword argument such as `torch.abs(input, out=None)`.
 
 In order to provide implementations for these Python functions the legacy schema
-requires C++ implementations for three situations `abs(Tensor self)  -> Tensor`, 
+requires C++ implementations for three situations `abs(Tensor self)  -> Tensor`,
 `abs_(Tensor self) -> Tensor` and `abs_out(Tensor out, Tensor self) -> Tensor`.
 
 Now, as we move towards the unification, we start to use a different syntax to represent
@@ -220,14 +244,14 @@ Let's revisit the previous native function declarations and see the conventions 
     `self` may be written to and returned. Further, the annotation indicates that the return value
     may alias the input. This indicates an inplace function and by convention ends in a single '\_'.
   - `abs(Tensor self, *, Tensor(a!) out) -> Tensor(a!)`
-    In the Python frontend `out` can be passed as a keyword argument and may be written to. 
+    In the Python frontend `out` can be passed as a keyword argument and may be written to.
     In this case it indicates the schema for a function that must accept `out` as this does not
     provide a default argument. The idea behind representing this as a optional argument is to
     document the intended usage. This maps to the legacy `abs_out(Tensor out, Tensor self) -> Tensor`.
     As with the legacy `_out` function you must call the argument `Tensor out` or `Tensor out0`,
     `Tensor out1` in the context of multiple arguments.
 
-There is also another situtation in which we use annotations, namely views.
+There is also another situation in which we use annotations, namely views.
   - `transpose(Tensor(a) self, int dim0, int dim1) -> Tensor(a)`
     An alias to the memory represented by `self` may be also returned, however it is not mutated.
 
@@ -249,6 +273,9 @@ CUDA tensors.  Technically, it is also possible to write `dispatch: func_name`
 to unconditionally dispatch to a native function whose name is different than
 the name in the public ATen API, but this is generally frowned upon (just name
 them the same thing!)
+
+If two backends have the same dispatch function, you can write `CPU, CUDA: func`
+to reuse the same function name in both cases.
 
 ### `device_guard`
 
@@ -287,6 +314,35 @@ with other components of PyTorch in order to reduce overall complexity.
 If you find yourself having to set this field to False add @gchanan to your PR's
 set of reviewers.
 
+### `use_c10_dispatcher`
+
+```
+use_c10_dispatcher: 'with_codegenerated_unboxing_wrapper'
+use_c10_dispatcher: 'full'
+```
+
+This will indicate the level of integration with the c10 dispatcher.
+If setting this to 'full' works for your operator, please do.
+This will enabled the full templated boxing and unboxing for your operator.
+Some ops use features that aren't supported by those templates yet,
+and enabling `use_c10_dispatcher: full` for those will result in a compiler error.
+For those, use `use_c10_dispatcher: 'with_codegenerated_unboxing_wrapper'` instead,
+or just omit the argument because 'with_codegenerated_unboxing_wrapper' is the default.
+
+### `manual_kernel_registration`
+
+```
+manual_kernel_registration: True
+```
+
+With this flag set, we will not generate code to automatically register the C++ operator implementation
+to TypeDefault (catchAll dispatch key) with the dispatcher.
+It doesn't make sense to have both `dispatch` section and `manual_kernel_registration: True` for the same op.
+You can find the manual registrations in torch/csrc/autograd/VariableTypeManual.cpp.
+Currently ops have this field set to True should match `MANUAL_CATCHALL` in tools/autograd/gen_variable_type.py
+(It can be a superset of `MANUAL_CATCHALL` but we don't have a use case for it).
+This field should only be used rarely.
+
 ## Writing an implementation in C++
 
 Implementations of native functions go in an appropriate C++ file in the
@@ -298,9 +354,8 @@ implementation (no header necessary) with a matching signature to
 the generated header from the ATen metadata.  There are many
 simple native functions; take a look at some of them to see what to do.
 
-Although, for the most part, writing an ATen function is mostly writing
-the algorithm you want to implement, there are some less obvious details
-you should also consider.
+Although writing an ATen function is mostly writing the algorithm you want
+to implement, there are some less obvious details you should also consider.
 
 ### Will your function be automatically differentiable?
 
@@ -316,6 +371,17 @@ However, in some situations, you can write a function in ATen and it
 will be automatically differentiated! This can be the case if the function implementation
 only calls other operations which are themselves differentiable.  In this
 case, you don't have to write an entry in `tools/autograd/derivatives.yaml`.
+
+### Will this function be exposed to python? What are the namespaces?
+
+We don't generate python bindings for all functions. There're certain patterns in function
+name that we skip in python binding generation, e.g. `*_backward`. Check
+`tools/autograd/gen_python_functions.py` for the latest rules.
+
+The generated bindings are either exposed as methods on python_variable or functions on
+the torch._C._nn (marked with `python_module: nn`),
+torch._C._fft (marked with `python_module: fft`),
+or torch._C._linalg (marked with `python_module: linalg`) objects.
 
 ### Can it handle being passed Variables?
 
@@ -347,44 +413,6 @@ NB: There is one downside to following the `at::` qualification rule, which
 is that if you know that you will only ever be called with `Tensor`, a
 direct `at::native` call will be more efficient (as it avoids a dynamic
 dispatch).
-
-### How to handle broadcasting?
-
-Unlike our legacy TH bindings, ATen native functions do not automatically
-handle broadcasting; you will have to insert the necessary broadcasting
-calls yourself.
-
-When writing broadcasting code, we obey the convention that `op` is
-broadcasting, while `s_op` (with the `s_` prefix) is not broadcasting.  The
-relationship is best seen by an example of how you would implement broadcasting
-addition out of non-broadcasting addition:
-
-```
-#include <ATen/ExpandUtils.h>
-
-Tensor add(const Tensor& self, const Tensor& other) {
-  Tensor b_self, b_other;
-  std::tie(b_self, b_other) = expand_outplace(self, other, "add");
-  return s_add(b_self, b_other);
-}
-
-Tensor s_add(const Tensor& self, const Tensor& other) {
-  // non-broadcasting implementation of addition
-}
-```
-
-For inplace operations, the convention looks like this:
-
-```
-Tensor& add_(Tensor& self, const Tensor& other) {
-  Tensor b_other = expand_inplace(self, other, "add_");
-  return s_add_(self, b_other);
-}
-
-Tensor& s_add_(Tensor& self, const Tensor& other) {
-  // non-broadcasting implementation of inplace addition
-}
-```
 
 ### Undefined tensor conventions
 

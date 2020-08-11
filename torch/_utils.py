@@ -1,6 +1,10 @@
 import torch
+import torch._six
+from typing import Optional
 import warnings
 from collections import defaultdict
+import sys
+import traceback
 
 
 def _type(self, dtype=None, non_blocking=False, **kwargs):
@@ -138,6 +142,64 @@ def _rebuild_tensor_v2(storage, storage_offset, size, stride, requires_grad, bac
     tensor._backward_hooks = backward_hooks
     return tensor
 
+
+_sparse_tensors_to_validate = []
+
+# In _legacy_load() in serialization.py we unpickle storages after the sparse
+# tensors have been already unpickled. Those storages contain data necessary for
+# validating sparse tensors: indices and values. That's why sparse tensors are
+# first unpickled without any validation, and then this function is called just
+# before _legacy_load() returns, so that all the sparse tensors can be validated
+# in bulk.
+#
+# The same procedure must be followed by _load() in serialization.py because due
+# to Pickler semantics, we have to use the same (non-validating) function for
+# unpickling sparse tensors, regardless of the caller.
+def _validate_loaded_sparse_tensors():
+    try:
+        for t in _sparse_tensors_to_validate:
+            torch._validate_sparse_coo_tensor_args(t._indices(), t._values(),
+                                                   t.size())
+    finally:
+        _sparse_tensors_to_validate.clear()
+
+def _rebuild_sparse_tensor(layout, data):
+    if layout == torch.sparse_coo:
+        indices, values, size = data
+        result = torch._sparse_coo_tensor_unsafe(indices, values, size)
+        _sparse_tensors_to_validate.append(result)
+        return result
+
+    raise NotImplementedError("rebuilding sparse tensor for layout %s" % (layout))
+
+
+def _rebuild_xla_tensor(data, dtype, device, requires_grad):
+    tensor = torch.from_numpy(data).to(dtype=dtype, device=device)
+    tensor.requires_grad = requires_grad
+    return tensor
+
+
+def _rebuild_qtensor(storage, storage_offset, size, stride, quantizer_params, requires_grad, backward_hooks):
+    qscheme = quantizer_params[0]
+    if qscheme == torch.per_tensor_affine:
+        _, scale, zero_point = quantizer_params
+        tensor = torch._empty_affine_quantized(size, scale=scale, zero_point=zero_point, dtype=storage.dtype)
+    elif qscheme == torch.per_channel_affine:
+        _, scales, zero_points, axis = quantizer_params
+        if type(scales) is list and type(zero_points) is list:
+            scales = torch.tensor(scales, dtype=torch.double)
+            zero_points = torch.tensor(zero_points, dtype=torch.long)
+        tensor = torch._empty_per_channel_affine_quantized(
+            size, scales=scales, zero_points=zero_points, axis=axis, dtype=storage.dtype)
+    else:
+        raise RuntimeError("Can't deserialize quantized tensor with qscheme {}".format(qscheme))
+    tensor.set_(storage, storage_offset, size, stride)
+    tensor.requires_grad = requires_grad
+    # NB: This line exists only for backwards compatibility; the
+    # general expectation is that backward_hooks is an empty
+    # OrderedDict.  See Note [Don't serialize hooks]
+    tensor._backward_hooks = backward_hooks
+    return tensor
 
 def _rebuild_parameter(data, requires_grad, backward_hooks):
     param = torch.nn.Parameter(data, requires_grad)
@@ -317,3 +379,107 @@ def annotate(ret, **kwargs):
         fun.__annotations__['return'] = ret
         return fun
     return dec
+
+
+# NOTE [ Python Traceback Reference Cycle Problem ]
+#
+# When using sys.exc_info(), it is important to **not** store the exc_info[2],
+# which is the traceback, because otherwise you will run into the traceback
+# reference cycle problem, i.e., the traceback holding reference to the frame,
+# and the frame (which holds reference to all the object in its temporary scope)
+# holding reference the traceback.
+
+class KeyErrorMessage(str):
+    r"""str subclass that returns itself in repr"""
+    def __repr__(self):
+        return self
+
+
+class ExceptionWrapper(object):
+    r"""Wraps an exception plus traceback to communicate across threads"""
+    def __init__(self, exc_info=None, where="in background"):
+        # It is important that we don't store exc_info, see
+        # NOTE [ Python Traceback Reference Cycle Problem ]
+        if exc_info is None:
+            exc_info = sys.exc_info()
+        self.exc_type = exc_info[0]
+        self.exc_msg = "".join(traceback.format_exception(*exc_info))
+        self.where = where
+
+    def reraise(self):
+        r"""Reraises the wrapped exception in the current thread"""
+        # Format a message such as: "Caught ValueError in DataLoader worker
+        # process 2. Original Traceback:", followed by the traceback.
+        msg = "Caught {} {}.\nOriginal {}".format(
+            self.exc_type.__name__, self.where, self.exc_msg)
+        if self.exc_type == KeyError:
+            # KeyError calls repr() on its argument (usually a dict key). This
+            # makes stack traces unreadable. It will not be changed in Python
+            # (https://bugs.python.org/issue2651), so we work around it.
+            msg = KeyErrorMessage(msg)
+        raise self.exc_type(msg)
+
+
+def _get_available_device_type():
+    if torch.cuda.is_available():
+        return "cuda"
+    # add more available device types here
+    return None
+
+
+def _get_device_attr(get_member):
+    device_type = _get_available_device_type()
+    if device_type.lower() == "cuda":
+        return get_member(torch.cuda)
+    # add more available device types here
+    return None
+
+
+def _get_current_device_index():
+    # current device index
+    return _get_device_attr(lambda m: m.current_device())
+
+
+def _get_all_device_indices():
+    # all device index
+    return _get_device_attr(lambda m: list(range(m.device_count())))
+
+
+def _get_devices_properties(device_ids):
+    # all device properties
+    return [_get_device_attr(lambda m: m.get_device_properties(i)) for i in device_ids]
+
+
+def _get_device_index(device, optional=False, allow_cpu=False) -> int:
+    r"""Gets the device index from :attr:`device`, which can be a torch.device
+    object, a Python integer, or ``None``.
+
+    If :attr:`device` is a torch.device object, returns the device index if it
+    has index. Note that for a device without a specified index,
+    i.e., ``torch.device('xxx')``, this will return the current default
+    device of that type if :attr:`optional` is ``True``. If :attr:`allow_cpu` is ``True``,
+    CPU devices will be accepted and ``-1`` will be returned in this case.
+
+    If :attr:`device` is a Python integer, it is returned as is.
+
+    If :attr:`device` is ``None``, this will return the current default
+    device of the supported runtime platform if :attr:`optional` is ``True``.
+    i.e., the current default CUDA device will be returned if CUDA runtime is supported.
+    """
+    if isinstance(device, str):
+        device = torch.device(device)
+    device_idx: Optional[int]
+    device_idx = None
+    if isinstance(device, torch.device):
+        if not allow_cpu and device.type == 'cpu':
+            raise ValueError('Expected a non cpu device, but got: {}'.format(device))
+        device_idx = -1 if device.type == 'cpu' else device.index
+    if isinstance(device, int):
+        device_idx = device
+    if device_idx is None:
+        if optional:
+            device_idx = _get_current_device_index()
+        else:
+            raise ValueError('Expected a torch.device with a specified index '
+                             'or an integer, but got:{}'.format(device))
+    return device_idx

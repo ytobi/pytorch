@@ -1,5 +1,9 @@
 #include "torch/csrc/autograd/VariableTypeUtils.h"
 
+#include <ATen/TypeDefault.h>
+#include <torch/library.h>
+#include <ATen/core/op_registration/hacky_wrapper_for_legacy_signatures.h>
+
 // ${generated_comment}
 
 // NOTE [Sharded File]: on this file's split-into-shards state
@@ -27,6 +31,27 @@ using namespace torch::autograd::generated;
 
 namespace torch { namespace autograd {
 
+namespace VariableType {
+namespace{
+  void reset_grad_accumulator(Variable & self) {
+    AutogradMeta* meta = torch::autograd::impl::get_autograd_meta(self);
+    if (meta != nullptr) {
+      meta->grad_accumulator_.reset();
+    }
+  }
+}
+
+namespace {
 ${type_derived_method_definitions}
+}
+}
+
+namespace {
+
+TORCH_LIBRARY_IMPL(aten, Autograd, m) {
+  ${wrapper_registrations}
+}
+
+}
 
 }} // namespace torch::autograd
